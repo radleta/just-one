@@ -1,0 +1,18 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# Check for coverage/ directory
+if git diff --cached --name-only | grep -q "^coverage/"; then
+  echo "Error: Attempting to commit coverage/ directory"
+  echo "The coverage/ directory should not be committed."
+  exit 1
+fi
+
+# Check for node_modules (just in case)
+if git diff --cached --name-only | grep -q "^node_modules/"; then
+  echo "Error: Attempting to commit node_modules/ directory"
+  exit 1
+fi
+
+# Run lint-staged for code quality checks
+npx lint-staged
