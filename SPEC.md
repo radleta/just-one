@@ -197,13 +197,18 @@ If two `just-one` commands with the same name start simultaneously, there's a ra
 ```
 just-one/
   src/
-    index.js          # CLI entry point
+    index.ts          # CLI entry point
     lib/
-      pid.js          # PID file operations
-      process.js      # Process spawn/kill
-      cli.js          # Argument parsing
+      cli.ts          # Argument parsing and validation
+      pid.ts          # PID file operations
+      process.ts      # Process spawn/kill
+    e2e/
+      cli.e2e.test.ts # End-to-end tests
   bin/
     just-one.js       # Shebang wrapper
+  dist/
+    index.js          # Compiled ESM bundle
+    index.d.ts        # TypeScript declarations
   package.json
   README.md
   LICENSE

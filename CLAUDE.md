@@ -26,10 +26,10 @@
 
 **Test files:**
 
-- `lib/cli.test.ts` - Unit tests for CLI parsing (390 lines)
-- `lib/pid.test.ts` - Unit tests for PID operations (216 lines)
-- `lib/process.test.ts` - Unit tests for process management (211 lines)
-- `e2e/cli.e2e.test.ts` - End-to-end integration tests (467 lines)
+- `lib/cli.test.ts` - Unit tests for CLI parsing (~390 lines)
+- `lib/pid.test.ts` - Unit tests for PID operations (~215 lines)
+- `lib/process.test.ts` - Unit tests for process management (~210 lines)
+- `e2e/cli.e2e.test.ts` - End-to-end integration tests (~485 lines)
 
 **Key patterns:**
 
@@ -112,7 +112,11 @@ npm run build     # build bundle
 
 ```bash
 npm run build
-node bin/just-one.js -n test -- node -e "setInterval(() => {}, 1000)"
+# Windows: use ping for long-running process
+node bin/just-one.js -n test -- ping -n 60 127.0.0.1
+# Unix: use sleep
+node bin/just-one.js -n test -- sleep 60
+
 node bin/just-one.js -l  # list running
 node bin/just-one.js -k test  # kill it
 ```
