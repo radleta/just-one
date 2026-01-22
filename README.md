@@ -28,13 +28,13 @@ Existing solutions have drawbacks:
 ## Installation
 
 ```bash
-npm install -g just-one
+npm install -g @radleta/just-one
 ```
 
 Or use with npx (no install required):
 
 ```bash
-npx just-one -n myapp -- npm run dev
+npx @radleta/just-one -n myapp -- npm run dev
 ```
 
 ## Usage
