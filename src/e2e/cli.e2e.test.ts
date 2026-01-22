@@ -39,24 +39,6 @@ function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr:
   });
 }
 
-// Helper to run CLI synchronously (for simple commands)
-function runCliSync(args: string[]): { code: number; stdout: string; stderr: string } {
-  try {
-    const stdout = execSync(`node "${CLI_PATH}" ${args.join(' ')}`, {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    return { code: 0, stdout, stderr: '' };
-  } catch (error: unknown) {
-    const execError = error as { status?: number; stdout?: string; stderr?: string };
-    return {
-      code: execError.status ?? 1,
-      stdout: execError.stdout ?? '',
-      stderr: execError.stderr ?? '',
-    };
-  }
-}
-
 // Helper to start a long-running process via CLI
 function startProcess(name: string, pidDir: string = TEST_PID_DIR): ChildProcess {
   const isWindows = process.platform === 'win32';
