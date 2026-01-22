@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+Thumbs.db
+.env
+.vscode/
+.idea/
+*.local.*
+*.tgz
+.just-one/
+.test-pids/
+scratch/
