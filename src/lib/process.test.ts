@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { isProcessAlive, killProcess, waitForProcessToDie, spawnCommand, setupSignalHandlers } from './process.js';
+import {
+  isProcessAlive,
+  killProcess,
+  waitForProcessToDie,
+  spawnCommand,
+  setupSignalHandlers,
+  getProcessStartTime,
+  isSameProcessInstance,
+} from './process.js';
 import { ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 
@@ -206,5 +214,48 @@ describe('setupSignalHandlers', () => {
 
     // 128 + 2 (SIGINT = 2)
     expect(process.exit).toHaveBeenCalledWith(130);
+  });
+});
+
+describe('getProcessStartTime', () => {
+  it('returns start time for current process', async () => {
+    const startTime = await getProcessStartTime(process.pid);
+    expect(startTime).not.toBeNull();
+    expect(startTime).toBeLessThanOrEqual(Date.now());
+    // Process should have started within last hour (sanity check)
+    expect(startTime).toBeGreaterThan(Date.now() - 3600000);
+  });
+
+  it('returns null for non-existent PID', async () => {
+    const startTime = await getProcessStartTime(999999);
+    expect(startTime).toBeNull();
+  });
+
+  it('returns null for invalid PID', async () => {
+    const startTime = await getProcessStartTime(-1);
+    expect(startTime).toBeNull();
+  });
+});
+
+describe('isSameProcessInstance', () => {
+  it('returns true when times are within tolerance', async () => {
+    const startTime = await getProcessStartTime(process.pid);
+    expect(startTime).not.toBeNull();
+    // Simulate PID file created around same time as process
+    const result = await isSameProcessInstance(process.pid, startTime! + 100);
+    expect(result).toBe(true);
+  });
+
+  it('returns false when times differ significantly', async () => {
+    const startTime = await getProcessStartTime(process.pid);
+    expect(startTime).not.toBeNull();
+    // Simulate PID file from 10 minutes ago
+    const result = await isSameProcessInstance(process.pid, startTime! - 600000);
+    expect(result).toBe(false);
+  });
+
+  it('returns false for non-existent process', async () => {
+    const result = await isSameProcessInstance(999999, Date.now());
+    expect(result).toBe(false);
   });
 });

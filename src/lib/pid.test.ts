@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { getPidFilePath, readPid, writePid, deletePid, listPids } from './pid.js';
+import { getPidFilePath, readPid, writePid, deletePid, listPids, getPidFileMtime } from './pid.js';
 
 const TEST_DIR = '.test-just-one';
 
@@ -210,6 +210,25 @@ describe('PID operations', () => {
       expect(valid?.exists).toBe(true);
       expect(invalid?.pid).toBe(0);
       expect(invalid?.exists).toBe(false);
+    });
+  });
+
+  describe('getPidFileMtime', () => {
+    it('returns mtime for existing PID file', () => {
+      const before = Date.now();
+      writePid('mtime-test', 12345, TEST_DIR);
+      const after = Date.now();
+
+      const mtime = getPidFileMtime('mtime-test', TEST_DIR);
+      expect(mtime).not.toBeNull();
+      // Allow 100ms tolerance for file system timing variations
+      expect(mtime).toBeGreaterThanOrEqual(before - 100);
+      expect(mtime).toBeLessThanOrEqual(after + 100);
+    });
+
+    it('returns null for non-existent PID file', () => {
+      const mtime = getPidFileMtime('nonexistent', TEST_DIR);
+      expect(mtime).toBeNull();
     });
   });
 });

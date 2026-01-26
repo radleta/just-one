@@ -315,7 +315,8 @@ describe('CLI E2E Tests', () => {
       // PID file should exist with new PID
       const pid2 = readPidFile('test-replace');
       expect(pid2).not.toBeNull();
-      expect(pid2).not.toBe(pid1);
+      // Note: We don't assert pid2 !== pid1 because PIDs can be reused by the OS
+      // The important invariants are: old process dead (above), new process alive (below)
 
       // Second process should be alive
       expect(isProcessRunning(pid2!)).toBe(true);

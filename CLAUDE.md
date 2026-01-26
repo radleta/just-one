@@ -13,7 +13,7 @@
 
 ## Project Purpose
 
-**CLI tool** that ensures only one instance of a command runs at a time. Tracks processes by name using PID files. Kills the previous instance before starting a new one. Zero dependencies - uses only Node.js built-ins.
+**CLI tool** that ensures only one instance of a command runs at a time. Tracks processes by name using PID files. Kills the previous instance before starting a new one. Verifies process identity before killing to prevent PID reuse accidents.
 
 ## Architecture Quick Reference
 
@@ -81,16 +81,18 @@ Running `taskkill /IM node.exe /F` will kill EVERY node process on the machine, 
 
 1. **Always get PID from a trusted source** (PID file, spawn result)
 2. **Validate PID before killing** (use `isValidPid()` from `process.ts`)
-3. **Verify process is still the one you started** (check PID file exists)
+3. **Verify process identity** (use `isSameProcessInstance()` to check start time matches)
 4. **Use project's built-in mechanisms** (`just-one -k <name>`)
 5. **In tests, store PIDs when spawning** and clean up using those specific PIDs
 
 ### Code Reference
 
 The safe implementation is in `src/lib/process.ts`:
-- `killProcess(pid)` - Only kills specific PID (lines 50-74)
-- `isProcessAlive(pid)` - Checks specific PID (lines 23-44)
-- `isValidPid(pid)` - Validates PID range 1-4194304 (lines 16-18)
+- `killProcess(pid)` - Only kills specific PID
+- `isProcessAlive(pid)` - Checks if specific PID is running
+- `isValidPid(pid)` - Validates PID range 1-4194304
+- `getProcessStartTime(pid)` - Gets process start time via pidusage
+- `isSameProcessInstance(pid, mtime)` - Verifies process identity by comparing start times
 
 ## Development Workflow
 
@@ -200,7 +202,7 @@ git push && git push --tags      # Triggers GitHub Actions release
 - **Author:** Richard Adleta
 - **License:** MIT
 - **Engines:** Node 18+
-- **Dependencies:** None (Node.js built-ins only)
+- **Dependencies:** [pidusage](https://github.com/soyuka/pidusage) (cross-platform process metrics for PID verification)
 
 ## Cross-Platform Notes
 
@@ -212,6 +214,14 @@ git push && git push --tags      # Triggers GitHub Actions release
 - Windows: `/T` flag kills process tree (children)
 - Unix: Negative PID kills process group
 - Both use SIGTERM for graceful shutdown (not SIGKILL)
+
+## PID Reuse Protection
+
+The tool verifies process identity before killing by comparing:
+- PID file modification time (when we wrote the PID)
+- Process start time (from OS via pidusage)
+
+If these don't match within 5 seconds, the PID was likely reused by an unrelated process and we skip killing it. This prevents accidentally killing unrelated processes on systems with aggressive PID recycling (common on Windows).
 
 ## Common Issues
 

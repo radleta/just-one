@@ -3,6 +3,7 @@
  */
 
 import { spawn, execSync, ChildProcess } from 'child_process';
+import pidusage from 'pidusage';
 
 const isWindows = process.platform === 'win32';
 
@@ -13,8 +14,54 @@ const CHECK_INTERVAL_MS = 100;
 /**
  * Validate that a PID is a safe positive integer for use in system calls
  */
-function isValidPid(pid: number): boolean {
+export function isValidPid(pid: number): boolean {
   return Number.isInteger(pid) && pid > 0 && pid <= 4194304; // Max PID on most systems
+}
+
+// Tolerance for comparing PID file mtime with process start time
+const START_TIME_TOLERANCE_MS = 5000; // 5 seconds
+
+/**
+ * Get the start time of a process as Unix timestamp (milliseconds)
+ * Returns null if process doesn't exist or start time can't be determined
+ */
+export async function getProcessStartTime(pid: number): Promise<number | null> {
+  if (!isValidPid(pid)) {
+    return null;
+  }
+
+  try {
+    const stats = await pidusage(pid);
+    // Calculate start time from current timestamp minus elapsed time
+    return stats.timestamp - stats.elapsed;
+  } catch {
+    return null; // Process doesn't exist or can't get stats
+  }
+}
+
+/**
+ * Check if a running process is the same instance we originally spawned.
+ * Compares process start time with PID file modification time.
+ *
+ * Returns true if:
+ * - Process exists AND start time is within tolerance of pidFileMtime
+ *
+ * Returns false if:
+ * - Process doesn't exist
+ * - Can't determine process start time
+ * - Start time doesn't match (likely PID reuse)
+ */
+export async function isSameProcessInstance(
+  pid: number,
+  pidFileMtimeMs: number
+): Promise<boolean> {
+  const processStartTime = await getProcessStartTime(pid);
+  if (processStartTime === null) {
+    return false;
+  }
+
+  const diff = Math.abs(processStartTime - pidFileMtimeMs);
+  return diff <= START_TIME_TOLERANCE_MS;
 }
 
 /**

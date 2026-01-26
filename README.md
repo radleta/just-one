@@ -22,8 +22,9 @@ Existing solutions have drawbacks:
 - **Named process tracking** - Each process gets a unique name for precise targeting
 - **Automatic cleanup** - Previous instance killed before starting new one
 - **Cross-platform** - Works on Windows, macOS, and Linux
-- **Zero dependencies** - Uses only Node.js built-ins
+- **Minimal dependencies** - Only [pidusage](https://github.com/soyuka/pidusage) for process verification
 - **PID file management** - Survives terminal closes and system restarts
+- **PID reuse protection** - Verifies process identity before killing to prevent accidents
 
 ## Installation
 
@@ -110,9 +111,18 @@ just-one -n storybook -d /tmp -- npx storybook dev
 ```
 
 1. Check if a PID file exists for that name
-2. If yes, kill that specific process (and its children)
-3. Start the new process
-4. Save its PID for next time
+2. If yes, verify it's the same process we started (by comparing start times)
+3. If verified, kill that specific process (and its children)
+4. Start the new process
+5. Save its PID for next time
+
+### PID Reuse Protection
+
+Operating systems can reuse PIDs after a process terminates. To prevent accidentally killing an unrelated process that received the same PID, `just-one` compares:
+- The PID file's modification time (when we recorded the PID)
+- The process's actual start time (from the OS)
+
+If these don't match within 5 seconds, the PID file is considered stale and the process is not killed.
 
 ### Cross-Platform Process Handling
 
@@ -139,10 +149,11 @@ just-one -n storybook-docs -- storybook dev -p 6007
 | Feature | just-one | kill-port | pm2 |
 |---------|----------|-----------|-----|
 | Kills by PID (precise) | Yes | No (by port) | Yes |
+| PID reuse protection | Yes | No | No |
 | Cross-platform | Yes | Yes | Yes |
 | Zero config | Yes | Yes | No |
 | Remembers processes | Yes (PID file) | No | Yes (daemon) |
-| Lightweight | ~150 LOC | ~100 LOC | Heavy |
+| Lightweight | Yes (1 dep) | Yes | Heavy |
 | Daemon required | No | No | Yes |
 
 ## Requirements
