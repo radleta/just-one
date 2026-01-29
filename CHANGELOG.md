@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - E2E test "kills previous instance when starting new one" no longer asserts PID uniqueness (PIDs can be reused by the OS)
+- Husky pre-commit hook updated to v9 format (removed deprecated `husky.sh` sourcing)
 
 ## [0.1.0] - 2026-01-22
 
