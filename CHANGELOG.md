@@ -1,20 +1,16 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [1.1.0](https://github.com/radleta/just-one/compare/v1.0.0...v1.1.0) (2026-01-29)
 
-## [Unreleased]
+### Features
 
-### Fixed
+- add automatic changelog generation with standard-version ([380ee82](https://github.com/radleta/just-one/commit/380ee826e93c900df52c189dd495909794ce1a84))
 
-- CLI now displays correct version (was hardcoded as v0.1.0, now reads from package.json)
+### Bug Fixes
 
-### Added
-
-- E2E tests can now verify published npm package via `JUST_ONE_NPX` and `JUST_ONE_CLI` environment variables
-- New `test:npm` script to test published package
+- read version from package.json instead of hardcoded value ([3803889](https://github.com/radleta/just-one/commit/3803889d2349d0a03d42ccbc45412bb0908ae895))
 
 ## [1.0.0] - 2026-01-29
 
