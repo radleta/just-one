@@ -8,32 +8,46 @@ import { spawn, execSync, ChildProcess } from 'child_process';
 import { existsSync, readFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 
-const CLI_PATH = join(__dirname, '../../dist/index.js');
+// CLI invocation configuration
+// To test the published npm package instead of local build:
+//   JUST_ONE_NPX=1 npm test                    # uses npx @radleta/just-one
+//   JUST_ONE_NPX=1 JUST_ONE_CLI=@radleta/just-one@1.0.0 npm test  # specific version
+const USE_NPX = process.env.JUST_ONE_NPX === '1';
+const CLI_PATH = process.env.JUST_ONE_CLI || join(__dirname, '../../dist/index.js');
 const TEST_PID_DIR = join(__dirname, '../../.test-pids');
+
+// Get spawn command and args based on configuration
+function getCliSpawnArgs(args: string[]): { command: string; args: string[] } {
+  if (USE_NPX) {
+    return { command: 'npx', args: [CLI_PATH, ...args] };
+  }
+  return { command: 'node', args: [CLI_PATH, ...args] };
+}
 
 // Helper to run CLI and capture output
 function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn('node', [CLI_PATH, ...args], {
+  return new Promise(resolve => {
+    const { command, args: spawnArgs } = getCliSpawnArgs(args);
+    const child = spawn(command, spawnArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     let stdout = '';
     let stderr = '';
 
-    child.stdout?.on('data', (data) => {
+    child.stdout?.on('data', data => {
       stdout += data.toString();
     });
 
-    child.stderr?.on('data', (data) => {
+    child.stderr?.on('data', data => {
       stderr += data.toString();
     });
 
-    child.on('close', (code) => {
+    child.on('close', code => {
       resolve({ code: code ?? 1, stdout, stderr });
     });
 
-    child.on('error', (err) => {
+    child.on('error', err => {
       resolve({ code: 1, stdout, stderr: err.message });
     });
   });
@@ -45,14 +59,17 @@ function startProcess(name: string, pidDir: string = TEST_PID_DIR): ChildProcess
   const sleepCmd = isWindows ? 'ping' : 'sleep';
   const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
 
-  const child = spawn('node', [
-    CLI_PATH,
-    '-n', name,
-    '-d', pidDir,
+  const { command, args } = getCliSpawnArgs([
+    '-n',
+    name,
+    '-d',
+    pidDir,
     '--',
     sleepCmd,
     ...sleepArgs,
-  ], {
+  ]);
+
+  const child = spawn(command, args, {
     stdio: 'pipe',
     detached: false,
   });
@@ -61,7 +78,11 @@ function startProcess(name: string, pidDir: string = TEST_PID_DIR): ChildProcess
 }
 
 // Helper to wait for PID file to exist
-async function waitForPidFile(name: string, pidDir: string = TEST_PID_DIR, timeoutMs: number = 5000): Promise<boolean> {
+async function waitForPidFile(
+  name: string,
+  pidDir: string = TEST_PID_DIR,
+  timeoutMs: number = 5000
+): Promise<boolean> {
   const pidFile = join(pidDir, `${name}.pid`);
   const startTime = Date.now();
 
@@ -69,7 +90,7 @@ async function waitForPidFile(name: string, pidDir: string = TEST_PID_DIR, timeo
     if (existsSync(pidFile)) {
       return true;
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
   return false;
 }
@@ -228,7 +249,7 @@ describe('CLI E2E Tests', () => {
       expect(pid).not.toBeNull();
 
       // Give process time to fully start (longer on Windows)
-      await new Promise((resolve) => setTimeout(resolve, isWindows ? 2000 : 500));
+      await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
       expect(isProcessRunning(pid!)).toBe(true);
 
       // Kill it
@@ -237,7 +258,7 @@ describe('CLI E2E Tests', () => {
       expect(result.stdout).toContain('killed');
 
       // Wait a bit for process to die
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       // Verify it's dead
       expect(isProcessRunning(pid!)).toBe(false);
@@ -274,14 +295,16 @@ describe('CLI E2E Tests', () => {
       const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
 
       // First CLI invocation - starts a long-running process
-      const child1 = spawn('node', [
-        CLI_PATH,
-        '-n', 'test-replace',
-        '-d', TEST_PID_DIR,
+      const { command: cmd1, args: args1 } = getCliSpawnArgs([
+        '-n',
+        'test-replace',
+        '-d',
+        TEST_PID_DIR,
         '--',
         sleepCmd,
         ...sleepArgs,
-      ], { stdio: 'pipe' });
+      ]);
+      const child1 = spawn(cmd1, args1, { stdio: 'pipe' });
 
       // Wait for PID file
       const pidCreated1 = await waitForPidFile('test-replace');
@@ -291,23 +314,25 @@ describe('CLI E2E Tests', () => {
       expect(pid1).not.toBeNull();
 
       // Give it time to fully start (longer on Windows)
-      await new Promise((resolve) => setTimeout(resolve, isWindows ? 2000 : 1000));
+      await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 1000));
 
       // Verify process is running
       expect(isProcessRunning(pid1!)).toBe(true);
 
       // Second CLI invocation - should kill first and start new
-      const child2 = spawn('node', [
-        CLI_PATH,
-        '-n', 'test-replace',
-        '-d', TEST_PID_DIR,
+      const { command: cmd2, args: args2 } = getCliSpawnArgs([
+        '-n',
+        'test-replace',
+        '-d',
+        TEST_PID_DIR,
         '--',
         sleepCmd,
         ...sleepArgs,
-      ], { stdio: 'pipe' });
+      ]);
+      const child2 = spawn(cmd2, args2, { stdio: 'pipe' });
 
       // Wait for kill + respawn (longer on Windows due to taskkill)
-      await new Promise((resolve) => setTimeout(resolve, isWindows ? 5000 : 3000));
+      await new Promise(resolve => setTimeout(resolve, isWindows ? 5000 : 3000));
 
       // First process should be dead
       expect(isProcessRunning(pid1!)).toBe(false);
@@ -332,7 +357,9 @@ describe('CLI E2E Tests', () => {
           } else {
             process.kill(pid1);
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
       if (pid2 && isProcessRunning(pid2)) {
         try {
@@ -341,7 +368,9 @@ describe('CLI E2E Tests', () => {
           } else {
             process.kill(pid2);
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
     });
   });
@@ -394,14 +423,32 @@ describe('Edge Cases', () => {
   });
 
   it('handles names with hyphens and underscores', async () => {
-    const result = await runCli(['-n', 'my-test_app-v1', '-d', TEST_PID_DIR, '--', 'node', '-e', 'process.exit(0)']);
+    const result = await runCli([
+      '-n',
+      'my-test_app-v1',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      '-e',
+      'process.exit(0)',
+    ]);
     // Command exits immediately, which is fine
     expect(result.code).toBe(0);
   });
 
   it('handles very long but valid names', async () => {
     const longName = 'a'.repeat(200);
-    const result = await runCli(['-n', longName, '-d', TEST_PID_DIR, '--', 'node', '-e', 'process.exit(0)']);
+    const result = await runCli([
+      '-n',
+      longName,
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      '-e',
+      'process.exit(0)',
+    ]);
     expect(result.code).toBe(0);
   });
 
@@ -431,17 +478,19 @@ describe('Edge Cases', () => {
     const sleepCmd = isWindows ? 'ping' : 'sleep';
     const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
 
-    const child = spawn('node', [
-      CLI_PATH,
-      '-n', 'orphaned',
-      '-d', TEST_PID_DIR,
+    const { command, args } = getCliSpawnArgs([
+      '-n',
+      'orphaned',
+      '-d',
+      TEST_PID_DIR,
       '--',
       sleepCmd,
       ...sleepArgs,
-    ], { stdio: 'pipe' });
+    ]);
+    const child = spawn(command, args, { stdio: 'pipe' });
 
     // Wait for PID file to be updated
-    await new Promise((resolve) => setTimeout(resolve, isWindows ? 3000 : 1000));
+    await new Promise(resolve => setTimeout(resolve, isWindows ? 3000 : 1000));
 
     const pid = readPidFile('orphaned');
     expect(pid).not.toBeNull();
@@ -449,7 +498,7 @@ describe('Edge Cases', () => {
     expect(pid).not.toBe(999999999);
 
     // Give process more time to stabilize on Windows
-    await new Promise((resolve) => setTimeout(resolve, isWindows ? 2000 : 500));
+    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
     expect(isProcessRunning(pid!)).toBe(true);
 
     // Cleanup
@@ -461,7 +510,9 @@ describe('Edge Cases', () => {
         } else {
           process.kill(pid);
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
   });
 });

@@ -26,6 +26,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:npm": "JUST_ONE_NPX=1 JUST_ONE_CLI=@radleta/just-one vitest run src/e2e/",
     "lint": "eslint src",
     "format": "prettier --write \"src/**/*.ts\" \"*.{json,md,yml,yaml}\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"*.{json,md,yml,yaml}\"",
