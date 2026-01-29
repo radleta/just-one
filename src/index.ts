@@ -4,13 +4,14 @@
  */
 
 import { parseArgs, validateOptions, getHelpText, type CliOptions } from './lib/cli.js';
-import { readPid, writePid, deletePid, listPids } from './lib/pid.js';
+import { readPid, writePid, deletePid, listPids, getPidFileMtime } from './lib/pid.js';
 import {
   isProcessAlive,
   killProcess,
   waitForProcessToDie,
   spawnCommand,
   setupSignalHandlers,
+  isSameProcessInstance,
 } from './lib/process.js';
 
 // Read version from package.json at build time
@@ -34,8 +35,18 @@ async function handleKill(name: string, options: CliOptions): Promise<number> {
     return 0;
   }
 
-  if (!isProcessAlive(pid)) {
-    log(`Process ${name} (PID: ${pid}) is not running, cleaning up PID file`, options);
+  // Verify this is the same process we originally started (prevents killing
+  // unrelated processes that reused the same PID)
+  const pidFileMtime = getPidFileMtime(name, options.pidDir);
+  const isSameInstance =
+    pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime));
+
+  if (!isSameInstance) {
+    if (isProcessAlive(pid)) {
+      log(`PID ${pid} belongs to a different process, not killing`, options);
+    } else {
+      log(`Process ${name} (PID: ${pid}) is not running, cleaning up PID file`, options);
+    }
     deletePid(name, options.pidDir);
     return 0;
   }
@@ -84,10 +95,21 @@ async function handleRun(options: CliOptions): Promise<number> {
   // Check for existing process
   const existingPid = readPid(name, options.pidDir);
   if (existingPid !== null) {
-    if (isProcessAlive(existingPid)) {
+    const pidFileMtime = getPidFileMtime(name, options.pidDir);
+    const shouldKill =
+      pidFileMtime !== null &&
+      (await isSameProcessInstance(existingPid, pidFileMtime));
+
+    if (shouldKill) {
       log(`Killing existing process ${name} (PID: ${existingPid})...`, options);
       killProcess(existingPid);
       await waitForProcessToDie(existingPid);
+    } else if (isProcessAlive(existingPid)) {
+      // PID exists but doesn't match our process - likely PID reuse
+      log(
+        `Stale PID file detected (PID ${existingPid} belongs to different process), skipping kill`,
+        options
+      );
     }
     deletePid(name, options.pidDir);
   }

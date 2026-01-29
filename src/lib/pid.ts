@@ -2,7 +2,7 @@
  * PID file operations for just-one
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readdirSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 
 export interface PidInfo {
@@ -74,6 +74,20 @@ export function deletePid(name: string, pidDir: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Get the modification time of a PID file as Unix timestamp (milliseconds)
+ * Returns null if file doesn't exist
+ */
+export function getPidFileMtime(name: string, pidDir: string): number | null {
+  const pidFile = getPidFilePath(name, pidDir);
+  try {
+    const stats = statSync(pidFile);
+    return stats.mtimeMs;
+  } catch {
+    return null;
   }
 }
 
