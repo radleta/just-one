@@ -3,6 +3,7 @@
  * just-one - Ensure only one instance of a command runs at a time
  */
 
+import { createRequire } from 'module';
 import { parseArgs, validateOptions, getHelpText, type CliOptions } from './lib/cli.js';
 import { readPid, writePid, deletePid, listPids, getPidFileMtime } from './lib/pid.js';
 import {
@@ -14,8 +15,9 @@ import {
   isSameProcessInstance,
 } from './lib/process.js';
 
-// Read version from package.json at build time
-const VERSION = '0.1.0';
+// Read version from package.json at runtime
+const require = createRequire(import.meta.url);
+const { version: VERSION } = require('../package.json');
 
 function log(message: string, options: CliOptions): void {
   if (!options.quiet) {
@@ -38,8 +40,7 @@ async function handleKill(name: string, options: CliOptions): Promise<number> {
   // Verify this is the same process we originally started (prevents killing
   // unrelated processes that reused the same PID)
   const pidFileMtime = getPidFileMtime(name, options.pidDir);
-  const isSameInstance =
-    pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime));
+  const isSameInstance = pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime));
 
   if (!isSameInstance) {
     if (isProcessAlive(pid)) {
@@ -97,8 +98,7 @@ async function handleRun(options: CliOptions): Promise<number> {
   if (existingPid !== null) {
     const pidFileMtime = getPidFileMtime(name, options.pidDir);
     const shouldKill =
-      pidFileMtime !== null &&
-      (await isSameProcessInstance(existingPid, pidFileMtime));
+      pidFileMtime !== null && (await isSameProcessInstance(existingPid, pidFileMtime));
 
     if (shouldKill) {
       log(`Killing existing process ${name} (PID: ${existingPid})...`, options);
