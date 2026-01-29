@@ -72,6 +72,7 @@ killall node
 ### Why This Matters
 
 Running `taskkill /IM node.exe /F` will kill EVERY node process on the machine, including:
+
 - Other developers' processes on shared machines
 - IDE language servers
 - Build tools
@@ -88,6 +89,7 @@ Running `taskkill /IM node.exe /F` will kill EVERY node process on the machine, 
 ### Code Reference
 
 The safe implementation is in `src/lib/process.ts`:
+
 - `killProcess(pid)` - Only kills specific PID
 - `isProcessAlive(pid)` - Checks if specific PID is running
 - `isValidPid(pid)` - Validates PID range 1-4194304
@@ -173,11 +175,13 @@ try {
 npm run release:prepare  # validate + build + verify:package + size:check
 ```
 
-**Release:**
+**Release (uses standard-version for automatic changelog):**
 
 ```bash
-npm version [patch|minor|major]  # Updates version, creates tag
-git push && git push --tags      # Triggers GitHub Actions release
+npm run release          # Auto-bump based on conventional commits
+npm run release:minor    # Force minor version bump
+npm run release:major    # Force major version bump
+# postrelease hook auto-pushes commits and tags
 ```
 
 **GitHub Actions:**
@@ -187,13 +191,14 @@ git push && git push --tags      # Triggers GitHub Actions release
 
 ## npm Scripts Reference
 
-| Script | Purpose |
-|--------|---------|
-| `npm run dev` | Watch mode (tsup) |
-| `npm run build` | Production build |
-| `npm test` | Run tests |
-| `npm run validate` | lint + typecheck + test |
-| `npm run release:prepare` | Full pre-release validation |
+| Script                    | Purpose                                        |
+| ------------------------- | ---------------------------------------------- |
+| `npm run dev`             | Watch mode (tsup)                              |
+| `npm run build`           | Production build                               |
+| `npm test`                | Run tests                                      |
+| `npm run validate`        | lint + typecheck + test                        |
+| `npm run release:prepare` | Full pre-release validation                    |
+| `npm run release`         | Bump version + update CHANGELOG + commit + tag |
 
 ## Key Metadata
 
@@ -206,10 +211,10 @@ git push && git push --tags      # Triggers GitHub Actions release
 
 ## Cross-Platform Notes
 
-| Platform | Kill Method | Check Alive |
-|----------|-------------|-------------|
-| Windows | `taskkill /PID ${pid} /T /F` | `tasklist /FI "PID eq ${pid}"` |
-| Unix | `process.kill(-pid, 'SIGTERM')` | `process.kill(pid, 0)` |
+| Platform | Kill Method                     | Check Alive                    |
+| -------- | ------------------------------- | ------------------------------ |
+| Windows  | `taskkill /PID ${pid} /T /F`    | `tasklist /FI "PID eq ${pid}"` |
+| Unix     | `process.kill(-pid, 'SIGTERM')` | `process.kill(pid, 0)`         |
 
 - Windows: `/T` flag kills process tree (children)
 - Unix: Negative PID kills process group
@@ -218,6 +223,7 @@ git push && git push --tags      # Triggers GitHub Actions release
 ## PID Reuse Protection
 
 The tool verifies process identity before killing by comparing:
+
 - PID file modification time (when we wrote the PID)
 - Process start time (from OS via pidusage)
 
