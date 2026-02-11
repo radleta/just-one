@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, execSync, ChildProcess } from 'child_process';
-import { existsSync, readFileSync, mkdirSync, rmSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 // CLI invocation configuration
@@ -851,5 +851,295 @@ describe('Edge Cases', () => {
         /* ignore */
       }
     }
+  });
+});
+
+describe('Daemon Mode', () => {
+  beforeEach(() => {
+    if (existsSync(TEST_PID_DIR)) {
+      rmSync(TEST_PID_DIR, { recursive: true, force: true });
+    }
+    mkdirSync(TEST_PID_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(TEST_PID_DIR)) {
+      rmSync(TEST_PID_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('starts process in daemon mode and parent exits with code 0', async () => {
+    const isWindows = process.platform === 'win32';
+    const sleepCmd = isWindows ? 'ping' : 'sleep';
+    const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
+
+    const result = await runCli([
+      '-n',
+      'test-daemon',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Daemon started');
+
+    // PID file should exist
+    expect(existsSync(join(TEST_PID_DIR, 'test-daemon.pid'))).toBe(true);
+
+    // Log file should exist
+    expect(existsSync(join(TEST_PID_DIR, 'test-daemon.log'))).toBe(true);
+
+    // Process should be running
+    const pid = readPidFile('test-daemon');
+    expect(pid).not.toBeNull();
+
+    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+    expect(isProcessRunning(pid!)).toBe(true);
+
+    // Cleanup
+    try {
+      if (isWindows) {
+        execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'pipe' });
+      } else {
+        process.kill(pid!);
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+
+  it('captures stdout to log file', async () => {
+    const isWindows = process.platform === 'win32';
+
+    // Use a command that writes output and exits
+    const result = await runCli([
+      '-n',
+      'test-daemon-output',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      '-e',
+      'console.log("hello from daemon"); console.log("second line")',
+    ]);
+
+    expect(result.code).toBe(0);
+
+    // Wait for the short-lived process to finish writing
+    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 1000));
+
+    const logPath = join(TEST_PID_DIR, 'test-daemon-output.log');
+    expect(existsSync(logPath)).toBe(true);
+
+    const logContent = readFileSync(logPath, 'utf8');
+    expect(logContent).toContain('hello from daemon');
+    expect(logContent).toContain('second line');
+  });
+
+  it('replaces existing daemon (kills first, starts second)', async () => {
+    const isWindows = process.platform === 'win32';
+    const sleepCmd = isWindows ? 'ping' : 'sleep';
+    const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
+
+    // Start first daemon
+    const result1 = await runCli([
+      '-n',
+      'test-daemon-replace',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(result1.code).toBe(0);
+
+    const pid1 = readPidFile('test-daemon-replace');
+    expect(pid1).not.toBeNull();
+    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+    expect(isProcessRunning(pid1!)).toBe(true);
+
+    // Start second daemon with same name
+    const result2 = await runCli([
+      '-n',
+      'test-daemon-replace',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(result2.code).toBe(0);
+
+    // Wait for kill + respawn
+    await new Promise(resolve => setTimeout(resolve, isWindows ? 5000 : 2000));
+
+    // First process should be dead
+    expect(isProcessRunning(pid1!)).toBe(false);
+
+    // Second process should be alive
+    const pid2 = readPidFile('test-daemon-replace');
+    expect(pid2).not.toBeNull();
+    expect(isProcessRunning(pid2!)).toBe(true);
+
+    // Cleanup
+    try {
+      if (isWindows) {
+        execSync(`taskkill /PID ${pid2} /T /F`, { stdio: 'pipe' });
+      } else {
+        process.kill(pid2!);
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+
+  it('rotates log on restart when oversized', async () => {
+    const isWindows = process.platform === 'win32';
+
+    // Create an oversized log file (just over threshold with custom small threshold)
+    const logPath = join(TEST_PID_DIR, 'test-rotate.log');
+    // Default rotation is 10MB; we create an 11MB file then start daemon
+    // For a faster test, we'll verify rotation by checking the log.1 exists after restart
+    // Since rotation uses default 10MB, let's create a large-ish file
+    writeFileSync(logPath, 'x'.repeat(11 * 1024 * 1024));
+
+    expect(existsSync(logPath)).toBe(true);
+
+    // Start daemon — should trigger rotation
+    const result = await runCli([
+      '-n',
+      'test-rotate',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      '-e',
+      'console.log("after rotation")',
+    ]);
+    expect(result.code).toBe(0);
+
+    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 1000));
+
+    // Backup should exist
+    const backupPath = join(TEST_PID_DIR, 'test-rotate.log.1');
+    expect(existsSync(backupPath)).toBe(true);
+
+    // Backup should contain the old content
+    const backupContent = readFileSync(backupPath, 'utf8');
+    expect(backupContent.length).toBeGreaterThan(10 * 1024 * 1024);
+  });
+});
+
+describe('Logs Command', () => {
+  beforeEach(() => {
+    if (existsSync(TEST_PID_DIR)) {
+      rmSync(TEST_PID_DIR, { recursive: true, force: true });
+    }
+    mkdirSync(TEST_PID_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(TEST_PID_DIR)) {
+      rmSync(TEST_PID_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('shows logs for a process', async () => {
+    // Create a log file manually
+    const logPath = join(TEST_PID_DIR, 'test-logs.log');
+    writeFileSync(logPath, 'log line 1\nlog line 2\nlog line 3\n');
+
+    // Also create a PID file so the process appears tracked
+    writeFileSync(join(TEST_PID_DIR, 'test-logs.pid'), '999999999');
+
+    const result = await runCli(['-L', 'test-logs', '-d', TEST_PID_DIR]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('log line 1');
+    expect(result.stdout).toContain('log line 2');
+    expect(result.stdout).toContain('log line 3');
+  });
+
+  it('exits 1 when no logs exist', async () => {
+    const result = await runCli(['-L', 'nonexistent', '-d', TEST_PID_DIR]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('No logs found');
+  });
+
+  it('shows last N lines with --lines', async () => {
+    const logPath = join(TEST_PID_DIR, 'test-lines.log');
+    writeFileSync(logPath, 'line1\nline2\nline3\nline4\nline5\n');
+    writeFileSync(join(TEST_PID_DIR, 'test-lines.pid'), '999999999');
+
+    const result = await runCli(['-L', 'test-lines', '--lines', '2', '-d', TEST_PID_DIR]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain('line1');
+    expect(result.stdout).not.toContain('line2');
+    expect(result.stdout).not.toContain('line3');
+    expect(result.stdout).toContain('line4');
+    expect(result.stdout).toContain('line5');
+  });
+
+  it('shows daemon logs end-to-end', async () => {
+    const isWindows = process.platform === 'win32';
+
+    // Start a daemon that writes output
+    const result1 = await runCli([
+      '-n',
+      'test-logs-e2e',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      '-e',
+      'console.log("daemon output here")',
+    ]);
+    expect(result1.code).toBe(0);
+
+    // Wait for output
+    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 1000));
+
+    // View logs
+    const result2 = await runCli(['-L', 'test-logs-e2e', '-d', TEST_PID_DIR]);
+    expect(result2.code).toBe(0);
+    expect(result2.stdout).toContain('daemon output here');
+  });
+});
+
+describe('Clean Command with Log Files', () => {
+  beforeEach(() => {
+    if (existsSync(TEST_PID_DIR)) {
+      rmSync(TEST_PID_DIR, { recursive: true, force: true });
+    }
+    mkdirSync(TEST_PID_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(TEST_PID_DIR)) {
+      rmSync(TEST_PID_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('removes log files alongside stale PID files', async () => {
+    // Create stale PID file + log files
+    writeFileSync(join(TEST_PID_DIR, 'stale-app.pid'), '999999999');
+    writeFileSync(join(TEST_PID_DIR, 'stale-app.log'), 'old logs');
+    writeFileSync(join(TEST_PID_DIR, 'stale-app.log.1'), 'old backup');
+
+    const result = await runCli(['--clean', '-d', TEST_PID_DIR]);
+    expect(result.code).toBe(0);
+
+    // All files should be removed
+    expect(existsSync(join(TEST_PID_DIR, 'stale-app.pid'))).toBe(false);
+    expect(existsSync(join(TEST_PID_DIR, 'stale-app.log'))).toBe(false);
+    expect(existsSync(join(TEST_PID_DIR, 'stale-app.log.1'))).toBe(false);
   });
 });

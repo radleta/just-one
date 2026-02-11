@@ -19,23 +19,27 @@
 
 **Source files** (`src/`):
 
-- `index.ts` - CLI entry point and main handler logic (handleRun, handleKill, handleList, handleStatus, handleKillAll, handleClean, handlePid, handleWait)
+- `index.ts` - CLI entry point and main handler logic (handleRun, handleKill, handleList, handleStatus, handleKillAll, handleClean, handlePid, handleWait, handleLogs)
 - `lib/cli.ts` - Command-line argument parsing and validation
 - `lib/process.ts` - Process spawn/kill/management logic (CRITICAL - see safety section)
 - `lib/pid.ts` - PID file read/write/delete/list operations
+- `lib/log.ts` - Log file operations for daemon mode (read, write, rotate, tail)
 
 **Test files:**
 
-- `lib/cli.test.ts` - Unit tests for CLI parsing (~390 lines)
-- `lib/pid.test.ts` - Unit tests for PID operations (~215 lines)
-- `lib/process.test.ts` - Unit tests for process management (~210 lines)
-- `e2e/cli.e2e.test.ts` - End-to-end integration tests (~485 lines)
+- `lib/cli.test.ts` - Unit tests for CLI parsing
+- `lib/pid.test.ts` - Unit tests for PID operations
+- `lib/process.test.ts` - Unit tests for process management
+- `lib/log.test.ts` - Unit tests for log file operations
+- `e2e/cli.e2e.test.ts` - End-to-end integration tests
 
 **Key patterns:**
 
 - **Pure function extraction** - Business logic in `lib/*.ts` (testable without mocking)
 - **Cross-platform** - Windows uses `taskkill`, Unix uses `process.kill()`
 - **PID validation** - All PIDs validated before shell interpolation
+- **Daemon mode** - Detached process with `stdio: ['ignore', logFd, logFd]` for log capture
+- **Log rotation** - Automatic at spawn time when >10MB (keeps 1 backup as `.log.1`)
 
 **Build output:**
 

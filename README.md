@@ -22,6 +22,9 @@ Existing solutions have drawbacks:
 
 - **Named process tracking** - Each process gets a unique name for precise targeting
 - **Automatic cleanup** - Previous instance killed before starting new one
+- **Daemon mode** - Run processes in the background with log file capture
+- **Log viewing** - View captured logs, follow in real-time (like `tail -f`)
+- **Log rotation** - Automatic rotation at 10MB (keeps 1 backup)
 - **Cross-platform** - Works on Windows, macOS, and Linux
 - **Minimal dependencies** - Only [pidusage](https://github.com/soyuka/pidusage) for process verification
 - **PID file management** - Survives terminal closes and system restarts
@@ -59,6 +62,31 @@ just-one -n myapp -- node server.js
 ```bash
 # Only starts if not already running — safe to call repeatedly
 just-one -n vite -e -- npm run dev
+```
+
+### Daemon mode (background with log capture)
+
+```bash
+# Run in background — parent exits immediately, output captured to log file
+just-one -n myapp -D -- npm start
+
+# Logs are written to .just-one/myapp.log
+```
+
+### Viewing logs
+
+```bash
+# View all captured logs
+just-one -L myapp
+
+# View last 50 lines
+just-one -L myapp --lines 50
+
+# Follow logs in real-time (like tail -f) — auto-exits when process dies
+just-one -L myapp -f
+
+# Show last 20 lines then follow
+just-one -L myapp -f --lines 20
 ```
 
 ### Check if a process is running
@@ -102,10 +130,10 @@ just-one -l
 just-one --list
 ```
 
-### Clean up stale PID files
+### Clean up stale PID files and logs
 
 ```bash
-just-one --clean              # removes PID files for processes that are no longer running
+just-one --clean              # removes stale PID files and their associated log files
 ```
 
 ### Specify custom PID directory
@@ -120,22 +148,26 @@ just-one -n storybook -d /tmp -- npx storybook dev
 
 ## CLI Options
 
-| Option             | Alias | Description                                       |
-| ------------------ | ----- | ------------------------------------------------- |
-| `--name <name>`    | `-n`  | Required for run. Name to identify this process   |
-| `--kill <name>`    | `-k`  | Kill the named process and exit                   |
-| `--kill-all`       | `-K`  | Kill all tracked processes                        |
-| `--status <name>`  | `-s`  | Check if a named process is running (exit 0/1)    |
-| `--ensure`         | `-e`  | Only start if not already running (use with `-n`) |
-| `--pid <name>`     | `-p`  | Print the PID of a named process                  |
-| `--wait <name>`    | `-w`  | Wait for a named process to exit                  |
-| `--timeout <secs>` | `-t`  | Timeout in seconds (use with `--wait`)            |
-| `--clean`          |       | Remove stale PID files                            |
-| `--list`           | `-l`  | List all tracked processes and their status       |
-| `--pid-dir <dir>`  | `-d`  | Directory for PID files (default: `.just-one/`)   |
-| `--quiet`          | `-q`  | Suppress output                                   |
-| `--help`           | `-h`  | Show help                                         |
-| `--version`        | `-v`  | Show version                                      |
+| Option             | Alias | Description                                        |
+| ------------------ | ----- | -------------------------------------------------- |
+| `--name <name>`    | `-n`  | Required for run. Name to identify this process    |
+| `--daemon`         | `-D`  | Run in background with output captured to log file |
+| `--logs <name>`    | `-L`  | View captured logs for a named process             |
+| `--tail`           | `-f`  | Follow log output in real-time (use with `--logs`) |
+| `--lines <n>`      |       | Number of lines to show (use with `--logs`)        |
+| `--kill <name>`    | `-k`  | Kill the named process and exit                    |
+| `--kill-all`       | `-K`  | Kill all tracked processes                         |
+| `--status <name>`  | `-s`  | Check if a named process is running (exit 0/1)     |
+| `--ensure`         | `-e`  | Only start if not already running (use with `-n`)  |
+| `--pid <name>`     | `-p`  | Print the PID of a named process                   |
+| `--wait <name>`    | `-w`  | Wait for a named process to exit                   |
+| `--timeout <secs>` | `-t`  | Timeout in seconds (use with `--wait`)             |
+| `--clean`          |       | Remove stale PID files and orphaned log files      |
+| `--list`           | `-l`  | List all tracked processes and their status        |
+| `--pid-dir <dir>`  | `-d`  | Directory for PID files (default: `.just-one/`)    |
+| `--quiet`          | `-q`  | Suppress output                                    |
+| `--help`           | `-h`  | Show help                                          |
+| `--version`        | `-v`  | Show version                                       |
 
 ## package.json Scripts
 
@@ -144,7 +176,8 @@ just-one -n storybook -d /tmp -- npx storybook dev
   "scripts": {
     "storybook": "just-one -n storybook -- storybook dev -p 6006",
     "dev": "just-one -n vite -e -- vite",
-    "dev:api": "just-one -n api -e -- node server.js",
+    "dev:api": "just-one -n api -D -- node server.js",
+    "dev:logs": "just-one -L api -f",
     "stop": "just-one -K"
   }
 }
@@ -155,6 +188,8 @@ just-one -n storybook -d /tmp -- npx storybook dev
 ```
 .just-one/
   storybook.pid    # Contains: 12345
+  storybook.log    # Captured output (daemon mode only)
+  storybook.log.1  # Rotated backup (auto-managed)
   vite.pid         # Contains: 67890
 ```
 
@@ -206,7 +241,8 @@ just-one -n storybook-docs -- storybook dev -p 6007
 | Zero config            | Yes            | Yes          | No           |
 | Remembers processes    | Yes (PID file) | No           | Yes (daemon) |
 | Lightweight            | Yes (1 dep)    | Yes          | Heavy        |
-| Daemon required        | No             | No           | Yes          |
+| Daemon mode            | Optional       | No           | Yes          |
+| Log capture            | Yes            | No           | Yes          |
 
 ## Requirements
 

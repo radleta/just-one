@@ -13,6 +13,10 @@ export interface CliOptions {
   pid?: string;
   wait?: string;
   timeout?: number;
+  daemon: boolean;
+  logs?: string;
+  tail: boolean;
+  lines?: number;
   pidDir: string;
   quiet: boolean;
   help: boolean;
@@ -84,6 +88,10 @@ export function parseArgs(args: string[]): ParseOutput {
     pid: undefined,
     wait: undefined,
     timeout: undefined,
+    daemon: false,
+    logs: undefined,
+    tail: false,
+    lines: undefined,
     pidDir: DEFAULT_PID_DIR,
     quiet: false,
     help: false,
@@ -253,6 +261,52 @@ export function parseArgs(args: string[]): ParseOutput {
       continue;
     }
 
+    // Daemon
+    if (arg === '--daemon' || arg === '-D') {
+      options.daemon = true;
+      i++;
+      continue;
+    }
+
+    // Logs (requires value)
+    if (arg === '--logs' || arg === '-L') {
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) {
+        return { success: false, error: 'Option --logs requires a value' };
+      }
+      if (!isValidName(value)) {
+        return {
+          success: false,
+          error: 'Invalid name: must not contain path separators or be too long',
+        };
+      }
+      options.logs = value;
+      i += 2;
+      continue;
+    }
+
+    // Tail (follow logs)
+    if (arg === '--tail' || arg === '-f') {
+      options.tail = true;
+      i++;
+      continue;
+    }
+
+    // Lines (requires positive integer value)
+    if (arg === '--lines') {
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) {
+        return { success: false, error: 'Option --lines requires a positive integer' };
+      }
+      const num = Number(value);
+      if (!Number.isInteger(num) || num <= 0) {
+        return { success: false, error: 'Option --lines requires a positive integer' };
+      }
+      options.lines = num;
+      i += 2;
+      continue;
+    }
+
     // Timeout (requires numeric value)
     if (arg === '--timeout' || arg === '-t') {
       const value = args[i + 1];
@@ -299,6 +353,19 @@ export function validateOptions(options: CliOptions): ParseOutput {
     return { success: true, options };
   }
 
+  // Logs is a standalone operation
+  if (options.logs) {
+    return { success: true, options };
+  }
+
+  // --tail and --lines only valid with --logs
+  if (options.tail) {
+    return { success: false, error: 'Option --tail can only be used with --logs' };
+  }
+  if (options.lines !== undefined) {
+    return { success: false, error: 'Option --lines can only be used with --logs' };
+  }
+
   // Standalone operations that don't need name or command
   if (options.status) {
     return { success: true, options };
@@ -324,6 +391,9 @@ export function validateOptions(options: CliOptions): ParseOutput {
     return { success: false, error: 'Option --timeout can only be used with --wait' };
   }
 
+  // Daemon requires name and command (validated below as part of normal run)
+  // No special check needed here since daemon is a modifier for run
+
   // Running a command requires both name and command
   if (!options.name) {
     return { success: false, error: 'Option --name is required when running a command' };
@@ -345,16 +415,23 @@ export function getHelpText(): string {
 Usage:
   just-one -n <name> -- <command>    Run command, killing any previous instance
   just-one -n <name> -e -- <command> Run only if not already running (ensure mode)
+  just-one -n <name> -D -- <command> Run in daemon mode (background, logs to file)
+  just-one -L <name>                 View captured logs for a named process
+  just-one -L <name> -f              Follow logs in real-time (auto-exits on process death)
   just-one -k <name>                 Kill a named process
   just-one -K                        Kill all tracked processes
   just-one -s <name>                 Check if a named process is running
   just-one -p <name>                 Print the PID of a named process
   just-one -w <name>                 Wait for a named process to exit
   just-one -l                        List all tracked processes
-  just-one --clean                   Remove stale PID files
+  just-one --clean                   Remove stale PID files and orphaned log files
 
 Options:
   -n, --name <name>      Name to identify this process (required for running)
+  -D, --daemon           Run in background with output captured to log file
+  -L, --logs <name>      View captured logs for a named process
+  -f, --tail             Follow log output in real-time (use with --logs)
+  --lines <n>            Number of lines to show (use with --logs, default: all)
   -k, --kill <name>      Kill the named process and exit
   -K, --kill-all         Kill all tracked processes
   -s, --status <name>    Check if a named process is running (exit 0=running, 1=stopped)
@@ -362,7 +439,7 @@ Options:
   -p, --pid <name>       Print the PID of a named process
   -w, --wait <name>      Wait for a named process to exit
   -t, --timeout <secs>   Timeout in seconds (use with --wait)
-  --clean                Remove stale PID files
+  --clean                Remove stale PID files and orphaned log files
   -l, --list             List all tracked processes and their status
   -d, --pid-dir <dir>    Directory for PID files (default: .just-one/)
   -q, --quiet            Suppress output
@@ -376,6 +453,18 @@ Examples:
   # Run vite dev server only if not already running
   just-one -n vite -e -- npm run dev
 
+  # Run in daemon mode (background with log capture)
+  just-one -n myapp -D -- npm start
+
+  # View captured logs
+  just-one -L myapp
+
+  # View last 50 lines of logs
+  just-one -L myapp --lines 50
+
+  # Follow logs in real-time (like tail -f)
+  just-one -L myapp -f
+
   # Check if a process is running
   just-one -s storybook
 
@@ -388,7 +477,7 @@ Examples:
   # Wait for a process to exit (with 30s timeout)
   just-one -w myapp -t 30
 
-  # Clean up stale PID files
+  # Clean up stale PID files and orphaned logs
   just-one --clean
 
   # Kill a named process

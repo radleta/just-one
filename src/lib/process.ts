@@ -2,7 +2,8 @@
  * Cross-platform process handling for just-one
  */
 
-import { spawn, execSync, ChildProcess } from 'child_process';
+import { spawn, execSync, ChildProcess, type StdioOptions } from 'child_process';
+import { openSync, closeSync } from 'fs';
 import pidusage from 'pidusage';
 
 const isWindows = process.platform === 'win32';
@@ -178,6 +179,45 @@ export function spawnCommand(command: string, args: string[]): SpawnResult {
     child,
     pid: child.pid,
   };
+}
+
+/**
+ * Spawn a command in daemon mode (detached, with output captured to log file).
+ * The parent process does not wait for the child — it calls child.unref().
+ */
+export function spawnCommandDaemon(
+  command: string,
+  args: string[],
+  logFilePath: string
+): SpawnResult {
+  const logFd = openSync(logFilePath, 'a');
+
+  try {
+    const stdio: StdioOptions = ['ignore', logFd, logFd];
+
+    // On Windows, pass entire command as a single string to avoid escaping issues
+    const spawnCmd = isWindows ? `${command} ${args.join(' ')}` : command;
+    const spawnArgs = isWindows ? [] : args;
+
+    const child = spawn(spawnCmd, spawnArgs, {
+      stdio,
+      shell: isWindows,
+      detached: true,
+    });
+
+    if (child.pid === undefined) {
+      throw new Error('Failed to spawn daemon process');
+    }
+
+    child.unref();
+
+    return {
+      child,
+      pid: child.pid,
+    };
+  } finally {
+    closeSync(logFd);
+  }
 }
 
 // Grace period for Windows child process to exit before force-killing

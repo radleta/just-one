@@ -1,6 +1,15 @@
 # Changelog
 
-All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
+All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines. Version numbers and commit links are automatically managed by `npm run release`.
+
+## [Unreleased](https://github.com/radleta/just-one/compare/v1.2.0...HEAD)
+
+### Features
+
+- **cli:** add daemon mode with log file capture (`--daemon`/`-D`)
+- **cli:** add log viewing and real-time follow mode (`--logs`/`-L`, `--tail`/`-f`, `--lines`)
+- **log:** add automatic log rotation at 10MB with 1 backup
+- **cli:** `--clean` now removes orphaned log files alongside stale PID files
 
 ## [1.2.0](https://github.com/radleta/just-one/compare/v1.1.0...v1.2.0) (2026-02-11)
 
