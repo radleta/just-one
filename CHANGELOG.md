@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file. See [standa
 
 ## [Unreleased]
 
+### Features
+
+- **cli**: add status check (`-s`/`--status`) to check if a named process is running
+- **cli**: add kill-all (`-K`/`--kill-all`) to kill all tracked processes at once
+- **cli**: add ensure mode (`-e`/`--ensure`) for idempotent process start
+- **cli**: add clean (`--clean`) to remove stale PID files
+- **cli**: add PID output (`-p`/`--pid`) to print raw PID for scripting
+- **cli**: add wait (`-w`/`--wait`) with optional `--timeout` to block until process exits
+
 ### Bug Fixes
 
 - **windows**: allow child process to run cleanup handlers on Ctrl+C instead of force-killing immediately ([#graceful-shutdown](https://github.com/radleta/just-one/issues/graceful-shutdown))

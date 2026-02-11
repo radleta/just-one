@@ -166,6 +166,244 @@ describe('parseArgs', () => {
     });
   });
 
+  describe('status option', () => {
+    it('parses --status with value', () => {
+      const result = parseArgs(['--status', 'myapp']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.status).toBe('myapp');
+      }
+    });
+
+    it('parses -s with value', () => {
+      const result = parseArgs(['-s', 'myapp']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.status).toBe('myapp');
+      }
+    });
+
+    it('returns error when --status has no value', () => {
+      const result = parseArgs(['--status']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--status requires a value');
+      }
+    });
+
+    it('returns error when --status value starts with dash', () => {
+      const result = parseArgs(['--status', '--list']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--status requires a value');
+      }
+    });
+
+    it('rejects status names with path traversal', () => {
+      const result = parseArgs(['-s', '../etc/passwd']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('Invalid name');
+      }
+    });
+  });
+
+  describe('kill-all flag', () => {
+    it('parses --kill-all flag', () => {
+      const result = parseArgs(['--kill-all']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.killAll).toBe(true);
+      }
+    });
+
+    it('parses -K flag', () => {
+      const result = parseArgs(['-K']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.killAll).toBe(true);
+      }
+    });
+  });
+
+  describe('ensure flag', () => {
+    it('parses --ensure flag', () => {
+      const result = parseArgs(['-n', 'myapp', '--ensure', '--', 'node', 'server.js']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.ensure).toBe(true);
+      }
+    });
+
+    it('parses -e flag', () => {
+      const result = parseArgs(['-n', 'myapp', '-e', '--', 'node', 'server.js']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.ensure).toBe(true);
+      }
+    });
+  });
+
+  describe('clean flag', () => {
+    it('parses --clean flag', () => {
+      const result = parseArgs(['--clean']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.clean).toBe(true);
+      }
+    });
+
+    it('does not have a short form -c', () => {
+      const result = parseArgs(['-c']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('Unknown option');
+      }
+    });
+  });
+
+  describe('pid option', () => {
+    it('parses --pid with value', () => {
+      const result = parseArgs(['--pid', 'myapp']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.pid).toBe('myapp');
+      }
+    });
+
+    it('parses -p with value', () => {
+      const result = parseArgs(['-p', 'myapp']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.pid).toBe('myapp');
+      }
+    });
+
+    it('returns error when --pid has no value', () => {
+      const result = parseArgs(['--pid']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--pid requires a value');
+      }
+    });
+
+    it('returns error when --pid value starts with dash', () => {
+      const result = parseArgs(['--pid', '--list']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--pid requires a value');
+      }
+    });
+
+    it('rejects pid names with path traversal', () => {
+      const result = parseArgs(['-p', '../etc/passwd']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('Invalid name');
+      }
+    });
+  });
+
+  describe('wait option', () => {
+    it('parses --wait with value', () => {
+      const result = parseArgs(['--wait', 'myapp']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.wait).toBe('myapp');
+      }
+    });
+
+    it('parses -w with value', () => {
+      const result = parseArgs(['-w', 'myapp']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.wait).toBe('myapp');
+      }
+    });
+
+    it('returns error when --wait has no value', () => {
+      const result = parseArgs(['--wait']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--wait requires a value');
+      }
+    });
+
+    it('returns error when --wait value starts with dash', () => {
+      const result = parseArgs(['--wait', '--list']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--wait requires a value');
+      }
+    });
+
+    it('rejects wait names with path traversal', () => {
+      const result = parseArgs(['-w', '../etc/passwd']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('Invalid name');
+      }
+    });
+  });
+
+  describe('timeout option', () => {
+    it('parses --timeout with numeric value', () => {
+      const result = parseArgs(['-w', 'myapp', '--timeout', '30']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.timeout).toBe(30);
+      }
+    });
+
+    it('parses -t with numeric value', () => {
+      const result = parseArgs(['-w', 'myapp', '-t', '10']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.timeout).toBe(10);
+      }
+    });
+
+    it('accepts decimal values', () => {
+      const result = parseArgs(['-w', 'myapp', '-t', '2.5']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.timeout).toBe(2.5);
+      }
+    });
+
+    it('returns error when --timeout has no value', () => {
+      const result = parseArgs(['--timeout']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--timeout requires a positive number');
+      }
+    });
+
+    it('returns error when --timeout value is not a number', () => {
+      const result = parseArgs(['-w', 'myapp', '--timeout', 'abc']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--timeout requires a positive number');
+      }
+    });
+
+    it('returns error when --timeout value is zero', () => {
+      const result = parseArgs(['-w', 'myapp', '--timeout', '0']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--timeout requires a positive number');
+      }
+    });
+
+    it('returns error when --timeout value starts with dash', () => {
+      const result = parseArgs(['--timeout', '-5']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--timeout requires a positive number');
+      }
+    });
+  });
+
   describe('command parsing', () => {
     it('parses command after --', () => {
       const result = parseArgs(['-n', 'myapp', '--', 'node', 'server.js', '--port', '3000']);
@@ -208,6 +446,13 @@ describe('validateOptions', () => {
     name: undefined,
     kill: undefined,
     list: false,
+    status: undefined,
+    killAll: false,
+    ensure: false,
+    clean: false,
+    pid: undefined,
+    wait: undefined,
+    timeout: undefined,
     pidDir: '.just-one',
     quiet: false,
     help: false,
@@ -259,6 +504,54 @@ describe('validateOptions', () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it('allows status without name or command', () => {
+    const result = validateOptions({ ...baseOptions, status: 'myapp' });
+    expect(result.success).toBe(true);
+  });
+
+  it('allows killAll without name or command', () => {
+    const result = validateOptions({ ...baseOptions, killAll: true });
+    expect(result.success).toBe(true);
+  });
+
+  it('allows clean without name or command', () => {
+    const result = validateOptions({ ...baseOptions, clean: true });
+    expect(result.success).toBe(true);
+  });
+
+  it('allows pid without name or command', () => {
+    const result = validateOptions({ ...baseOptions, pid: 'myapp' });
+    expect(result.success).toBe(true);
+  });
+
+  it('allows wait without name or command', () => {
+    const result = validateOptions({ ...baseOptions, wait: 'myapp' });
+    expect(result.success).toBe(true);
+  });
+
+  it('allows wait with timeout', () => {
+    const result = validateOptions({ ...baseOptions, wait: 'myapp', timeout: 30 });
+    expect(result.success).toBe(true);
+  });
+
+  it('errors when timeout is used without wait', () => {
+    const result = validateOptions({ ...baseOptions, timeout: 30 });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain('--timeout can only be used with --wait');
+    }
+  });
+
+  it('allows ensure with name and command', () => {
+    const result = validateOptions({
+      ...baseOptions,
+      ensure: true,
+      name: 'myapp',
+      command: ['node', 'server.js'],
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('getHelpText', () => {
@@ -273,6 +566,17 @@ describe('getHelpText', () => {
     expect(help).toContain('--list');
     expect(help).toContain('--help');
     expect(help).toContain('--version');
+  });
+
+  it('contains new flag names', () => {
+    const help = getHelpText();
+    expect(help).toContain('--status');
+    expect(help).toContain('--kill-all');
+    expect(help).toContain('--ensure');
+    expect(help).toContain('--clean');
+    expect(help).toContain('--pid');
+    expect(help).toContain('--wait');
+    expect(help).toContain('--timeout');
   });
 });
 

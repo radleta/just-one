@@ -54,6 +54,26 @@ just-one -n vite -- npm run dev
 just-one -n myapp -- node server.js
 ```
 
+### Ensure a process is running (idempotent)
+
+```bash
+# Only starts if not already running — safe to call repeatedly
+just-one -n vite -e -- npm run dev
+```
+
+### Check if a process is running
+
+```bash
+just-one -s storybook        # exit 0 if running, exit 1 if stopped
+just-one --status myapp
+```
+
+### Get the PID for scripting
+
+```bash
+pid=$(just-one -p myapp -q)  # prints just the PID number
+```
+
 ### Kill a named process
 
 ```bash
@@ -61,11 +81,31 @@ just-one -k storybook
 just-one --kill myapp
 ```
 
+### Kill all tracked processes
+
+```bash
+just-one -K
+just-one --kill-all
+```
+
+### Wait for a process to exit
+
+```bash
+just-one -w myapp             # wait indefinitely
+just-one -w myapp -t 30       # wait up to 30 seconds
+```
+
 ### List tracked processes
 
 ```bash
 just-one -l
 just-one --list
+```
+
+### Clean up stale PID files
+
+```bash
+just-one --clean              # removes PID files for processes that are no longer running
 ```
 
 ### Specify custom PID directory
@@ -80,15 +120,22 @@ just-one -n storybook -d /tmp -- npx storybook dev
 
 ## CLI Options
 
-| Option            | Alias | Description                                     |
-| ----------------- | ----- | ----------------------------------------------- |
-| `--name <name>`   | `-n`  | Required for run. Name to identify this process |
-| `--kill <name>`   | `-k`  | Kill the named process and exit                 |
-| `--list`          | `-l`  | List all tracked processes and their status     |
-| `--pid-dir <dir>` | `-d`  | Directory for PID files (default: `.just-one/`) |
-| `--quiet`         | `-q`  | Suppress output                                 |
-| `--help`          | `-h`  | Show help                                       |
-| `--version`       | `-v`  | Show version                                    |
+| Option             | Alias | Description                                       |
+| ------------------ | ----- | ------------------------------------------------- |
+| `--name <name>`    | `-n`  | Required for run. Name to identify this process   |
+| `--kill <name>`    | `-k`  | Kill the named process and exit                   |
+| `--kill-all`       | `-K`  | Kill all tracked processes                        |
+| `--status <name>`  | `-s`  | Check if a named process is running (exit 0/1)    |
+| `--ensure`         | `-e`  | Only start if not already running (use with `-n`) |
+| `--pid <name>`     | `-p`  | Print the PID of a named process                  |
+| `--wait <name>`    | `-w`  | Wait for a named process to exit                  |
+| `--timeout <secs>` | `-t`  | Timeout in seconds (use with `--wait`)            |
+| `--clean`          |       | Remove stale PID files                            |
+| `--list`           | `-l`  | List all tracked processes and their status       |
+| `--pid-dir <dir>`  | `-d`  | Directory for PID files (default: `.just-one/`)   |
+| `--quiet`          | `-q`  | Suppress output                                   |
+| `--help`           | `-h`  | Show help                                         |
+| `--version`        | `-v`  | Show version                                      |
 
 ## package.json Scripts
 
@@ -96,9 +143,9 @@ just-one -n storybook -d /tmp -- npx storybook dev
 {
   "scripts": {
     "storybook": "just-one -n storybook -- storybook dev -p 6006",
-    "dev": "just-one -n vite -- vite",
-    "dev:api": "just-one -n api -- node server.js",
-    "stop": "just-one -k storybook && just-one -k vite && just-one -k api"
+    "dev": "just-one -n vite -e -- vite",
+    "dev:api": "just-one -n api -e -- node server.js",
+    "stop": "just-one -K"
   }
 }
 ```
@@ -154,6 +201,7 @@ just-one -n storybook-docs -- storybook dev -p 6007
 | ---------------------- | -------------- | ------------ | ------------ |
 | Kills by PID (precise) | Yes            | No (by port) | Yes          |
 | PID reuse protection   | Yes            | No           | No           |
+| Status check           | Yes            | No           | Yes          |
 | Cross-platform         | Yes            | Yes          | Yes          |
 | Zero config            | Yes            | Yes          | No           |
 | Remembers processes    | Yes (PID file) | No           | Yes (daemon) |

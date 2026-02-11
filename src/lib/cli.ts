@@ -6,6 +6,13 @@ export interface CliOptions {
   name?: string;
   kill?: string;
   list: boolean;
+  status?: string;
+  killAll: boolean;
+  ensure: boolean;
+  clean: boolean;
+  pid?: string;
+  wait?: string;
+  timeout?: number;
   pidDir: string;
   quiet: boolean;
   help: boolean;
@@ -70,6 +77,13 @@ export function parseArgs(args: string[]): ParseOutput {
     name: undefined,
     kill: undefined,
     list: false,
+    status: undefined,
+    killAll: false,
+    ensure: false,
+    clean: false,
+    pid: undefined,
+    wait: undefined,
+    timeout: undefined,
     pidDir: DEFAULT_PID_DIR,
     quiet: false,
     help: false,
@@ -123,7 +137,10 @@ export function parseArgs(args: string[]): ParseOutput {
         return { success: false, error: 'Option --name requires a value' };
       }
       if (!isValidName(value)) {
-        return { success: false, error: 'Invalid name: must not contain path separators or be too long' };
+        return {
+          success: false,
+          error: 'Invalid name: must not contain path separators or be too long',
+        };
       }
       options.name = value;
       i += 2;
@@ -137,7 +154,10 @@ export function parseArgs(args: string[]): ParseOutput {
         return { success: false, error: 'Option --kill requires a value' };
       }
       if (!isValidName(value)) {
-        return { success: false, error: 'Invalid name: must not contain path separators or be too long' };
+        return {
+          success: false,
+          error: 'Invalid name: must not contain path separators or be too long',
+        };
       }
       options.kill = value;
       i += 2;
@@ -151,9 +171,99 @@ export function parseArgs(args: string[]): ParseOutput {
         return { success: false, error: 'Option --pid-dir requires a value' };
       }
       if (!isValidPidDir(value)) {
-        return { success: false, error: 'Invalid PID directory: must not contain path traversal sequences' };
+        return {
+          success: false,
+          error: 'Invalid PID directory: must not contain path traversal sequences',
+        };
       }
       options.pidDir = value;
+      i += 2;
+      continue;
+    }
+
+    // Status (requires value)
+    if (arg === '--status' || arg === '-s') {
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) {
+        return { success: false, error: 'Option --status requires a value' };
+      }
+      if (!isValidName(value)) {
+        return {
+          success: false,
+          error: 'Invalid name: must not contain path separators or be too long',
+        };
+      }
+      options.status = value;
+      i += 2;
+      continue;
+    }
+
+    // Kill All
+    if (arg === '--kill-all' || arg === '-K') {
+      options.killAll = true;
+      i++;
+      continue;
+    }
+
+    // Ensure
+    if (arg === '--ensure' || arg === '-e') {
+      options.ensure = true;
+      i++;
+      continue;
+    }
+
+    // Clean
+    if (arg === '--clean') {
+      options.clean = true;
+      i++;
+      continue;
+    }
+
+    // PID output (requires value)
+    if (arg === '--pid' || arg === '-p') {
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) {
+        return { success: false, error: 'Option --pid requires a value' };
+      }
+      if (!isValidName(value)) {
+        return {
+          success: false,
+          error: 'Invalid name: must not contain path separators or be too long',
+        };
+      }
+      options.pid = value;
+      i += 2;
+      continue;
+    }
+
+    // Wait (requires value)
+    if (arg === '--wait' || arg === '-w') {
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) {
+        return { success: false, error: 'Option --wait requires a value' };
+      }
+      if (!isValidName(value)) {
+        return {
+          success: false,
+          error: 'Invalid name: must not contain path separators or be too long',
+        };
+      }
+      options.wait = value;
+      i += 2;
+      continue;
+    }
+
+    // Timeout (requires numeric value)
+    if (arg === '--timeout' || arg === '-t') {
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) {
+        return { success: false, error: 'Option --timeout requires a positive number' };
+      }
+      const num = Number(value);
+      if (isNaN(num) || num <= 0) {
+        return { success: false, error: 'Option --timeout requires a positive number' };
+      }
+      options.timeout = num;
       i += 2;
       continue;
     }
@@ -189,6 +299,31 @@ export function validateOptions(options: CliOptions): ParseOutput {
     return { success: true, options };
   }
 
+  // Standalone operations that don't need name or command
+  if (options.status) {
+    return { success: true, options };
+  }
+  if (options.killAll) {
+    return { success: true, options };
+  }
+  if (options.clean) {
+    return { success: true, options };
+  }
+  if (options.pid) {
+    return { success: true, options };
+  }
+  if (options.wait) {
+    if (options.timeout !== undefined && options.timeout <= 0) {
+      return { success: false, error: 'Option --timeout requires a positive number' };
+    }
+    return { success: true, options };
+  }
+
+  // Timeout without wait is an error
+  if (options.timeout !== undefined && !options.wait) {
+    return { success: false, error: 'Option --timeout can only be used with --wait' };
+  }
+
   // Running a command requires both name and command
   if (!options.name) {
     return { success: false, error: 'Option --name is required when running a command' };
@@ -209,24 +344,52 @@ export function getHelpText(): string {
 
 Usage:
   just-one -n <name> -- <command>    Run command, killing any previous instance
+  just-one -n <name> -e -- <command> Run only if not already running (ensure mode)
   just-one -k <name>                 Kill a named process
+  just-one -K                        Kill all tracked processes
+  just-one -s <name>                 Check if a named process is running
+  just-one -p <name>                 Print the PID of a named process
+  just-one -w <name>                 Wait for a named process to exit
   just-one -l                        List all tracked processes
+  just-one --clean                   Remove stale PID files
 
 Options:
-  -n, --name <name>     Name to identify this process (required for running)
-  -k, --kill <name>     Kill the named process and exit
-  -l, --list            List all tracked processes and their status
-  -d, --pid-dir <dir>   Directory for PID files (default: .just-one/)
-  -q, --quiet           Suppress output
-  -h, --help            Show this help message
-  -v, --version         Show version number
+  -n, --name <name>      Name to identify this process (required for running)
+  -k, --kill <name>      Kill the named process and exit
+  -K, --kill-all         Kill all tracked processes
+  -s, --status <name>    Check if a named process is running (exit 0=running, 1=stopped)
+  -e, --ensure           Only start if not already running (use with -n and command)
+  -p, --pid <name>       Print the PID of a named process
+  -w, --wait <name>      Wait for a named process to exit
+  -t, --timeout <secs>   Timeout in seconds (use with --wait)
+  --clean                Remove stale PID files
+  -l, --list             List all tracked processes and their status
+  -d, --pid-dir <dir>    Directory for PID files (default: .just-one/)
+  -q, --quiet            Suppress output
+  -h, --help             Show this help message
+  -v, --version          Show version number
 
 Examples:
   # Run storybook, killing any previous instance
   just-one -n storybook -- npx storybook dev -p 6006
 
-  # Run vite dev server
-  just-one -n vite -- npm run dev
+  # Run vite dev server only if not already running
+  just-one -n vite -e -- npm run dev
+
+  # Check if a process is running
+  just-one -s storybook
+
+  # Get the PID for scripting
+  pid=$(just-one -p storybook -q)
+
+  # Kill all tracked processes
+  just-one -K
+
+  # Wait for a process to exit (with 30s timeout)
+  just-one -w myapp -t 30
+
+  # Clean up stale PID files
+  just-one --clean
 
   # Kill a named process
   just-one -k storybook
