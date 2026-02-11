@@ -344,13 +344,18 @@ describe('CLI E2E Tests', () => {
       const died = await waitForProcessDeath(pid1!, isWindows ? 15000 : 10000);
       expect(died).toBe(true);
 
-      // PID file should exist with new PID
-      const pid2 = readPidFile('test-replace');
+      // Poll until PID file has a running process (second CLI may still be writing it)
+      let pid2: number | null = null;
+      for (let i = 0; i < 50 && !pid2; i++) {
+        const candidate = readPidFile('test-replace');
+        if (candidate && candidate !== pid1 && isProcessRunning(candidate)) {
+          pid2 = candidate;
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
       expect(pid2).not.toBeNull();
-      // Note: We don't assert pid2 !== pid1 because PIDs can be reused by the OS
-      // The important invariants are: old process dead (above), new process alive (below)
-
-      // Second process should be alive
+      // Note: The important invariants are: old process dead (above), new process alive (below)
       expect(isProcessRunning(pid2!)).toBe(true);
 
       // Cleanup - kill both parent shells and their children
