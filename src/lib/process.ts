@@ -234,12 +234,7 @@ export interface SpawnResult {
  * Spawn a command with stdio forwarding
  */
 export function spawnCommand(command: string, args: string[]): SpawnResult {
-  // On Windows, pass entire command as a single string to avoid escaping issues
-  // with shell: true (DEP0190 warning and argument handling)
-  const spawnCmd = isWindows ? `${command} ${args.join(' ')}` : command;
-  const spawnArgs = isWindows ? [] : args;
-
-  const child = spawn(spawnCmd, spawnArgs, {
+  const child = spawn(command, args, {
     stdio: 'inherit',
     shell: isWindows,
     detached: !isWindows,
@@ -269,11 +264,7 @@ export function spawnCommandDaemon(
   try {
     const stdio: StdioOptions = ['ignore', logFd, logFd];
 
-    // On Windows, pass entire command as a single string to avoid escaping issues
-    const spawnCmd = isWindows ? `${command} ${args.join(' ')}` : command;
-    const spawnArgs = isWindows ? [] : args;
-
-    const child = spawn(spawnCmd, spawnArgs, {
+    const child = spawn(command, args, {
       stdio,
       shell: isWindows,
       detached: true,
