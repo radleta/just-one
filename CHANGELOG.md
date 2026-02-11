@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [Unreleased]
+
+### Bug Fixes
+
+- **windows**: allow child process to run cleanup handlers on Ctrl+C instead of force-killing immediately ([#graceful-shutdown](https://github.com/radleta/just-one/issues/graceful-shutdown))
+
+Previously, `setupSignalHandlers` called `process.kill(pid, 'SIGINT')` on Windows which invokes `TerminateProcess` — killing the child instantly without running cleanup handlers (e.g., removing temp files, closing connections). Now, `just-one` relies on the OS-delivered `CTRL_C_EVENT` via the shared console and only force-kills after a 2-second grace period if the child hasn't exited.
+
 ## [1.1.0](https://github.com/radleta/just-one/compare/v1.0.0...v1.1.0) (2026-01-29)
 
 ### Features
