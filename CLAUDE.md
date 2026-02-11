@@ -19,7 +19,7 @@
 
 **Source files** (`src/`):
 
-- `index.ts` - CLI entry point and main handler logic (handleRun, handleKill, handleList)
+- `index.ts` - CLI entry point and main handler logic (handleRun, handleKill, handleList, handleStatus, handleKillAll, handleClean, handlePid, handleWait)
 - `lib/cli.ts` - Command-line argument parsing and validation
 - `lib/process.ts` - Process spawn/kill/management logic (CRITICAL - see safety section)
 - `lib/pid.ts` - PID file read/write/delete/list operations

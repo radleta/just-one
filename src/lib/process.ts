@@ -51,10 +51,7 @@ export async function getProcessStartTime(pid: number): Promise<number | null> {
  * - Can't determine process start time
  * - Start time doesn't match (likely PID reuse)
  */
-export async function isSameProcessInstance(
-  pid: number,
-  pidFileMtimeMs: number
-): Promise<boolean> {
+export async function isSameProcessInstance(pid: number, pidFileMtimeMs: number): Promise<boolean> {
   const processStartTime = await getProcessStartTime(pid);
   if (processStartTime === null) {
     return false;
@@ -183,22 +180,47 @@ export function spawnCommand(command: string, args: string[]): SpawnResult {
   };
 }
 
+// Grace period for Windows child process to exit before force-killing
+const WINDOWS_GRACEFUL_TIMEOUT_MS = 2000;
+
 /**
  * Set up signal handlers to forward signals to child process
- * Note: Both SIGINT and SIGTERM are forwarded as SIGTERM to ensure
- * consistent graceful shutdown behavior across different termination methods.
+ *
+ * Unix: forwards SIGTERM to child for graceful shutdown.
+ *
+ * Windows: the child shares the console (stdio: 'inherit'), so when the user
+ * presses Ctrl+C, Windows delivers CTRL_C_EVENT to the child directly — no
+ * forwarding needed. We just set a force-kill timeout as a safety net in case
+ * the child doesn't exit on its own. process.kill(pid, 'SIGINT') on Windows
+ * calls TerminateProcess (not GenerateConsoleCtrlEvent), so we intentionally
+ * avoid calling it to give the child time to handle the OS-delivered signal.
  */
 export function setupSignalHandlers(child: ChildProcess, onExit?: () => void): void {
+  let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const forceKillWindows = () => {
+    if (child.pid && isValidPid(child.pid) && isProcessAlive(child.pid)) {
+      try {
+        execSync(`taskkill /PID ${child.pid} /T /F`, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch {
+        // Process might already be dead
+      }
+    }
+  };
+
   const handleSignal = (_signal: NodeJS.Signals) => {
     if (child.pid && isValidPid(child.pid)) {
       if (isWindows) {
-        try {
-          // PID is validated as a safe integer above before interpolation
-          execSync(`taskkill /PID ${child.pid} /T /F`, {
-            stdio: ['pipe', 'pipe', 'pipe'],
-          });
-        } catch {
-          // Process might already be dead
+        // On Windows, the child already received CTRL_C_EVENT from the OS
+        // (since it shares our console via stdio: 'inherit').
+        // Don't call process.kill() — it uses TerminateProcess which would
+        // prevent the child from running its cleanup handlers.
+        // Just set a force-kill timeout as a safety net.
+        if (forceKillTimer === null) {
+          forceKillTimer = setTimeout(forceKillWindows, WINDOWS_GRACEFUL_TIMEOUT_MS);
+          forceKillTimer.unref();
         }
       } else {
         // Forward as SIGTERM for graceful shutdown
@@ -207,11 +229,16 @@ export function setupSignalHandlers(child: ChildProcess, onExit?: () => void): v
     }
   };
 
-  // Forward both SIGINT (Ctrl+C) and SIGTERM to child as SIGTERM
+  // Forward both SIGINT (Ctrl+C) and SIGTERM to child
   process.on('SIGINT', () => handleSignal('SIGINT'));
   process.on('SIGTERM', () => handleSignal('SIGTERM'));
 
   child.on('exit', (code, signal) => {
+    // Child exited gracefully — cancel the force-kill timer if pending
+    if (forceKillTimer !== null) {
+      clearTimeout(forceKillTimer);
+      forceKillTimer = null;
+    }
     if (onExit) {
       onExit();
     }

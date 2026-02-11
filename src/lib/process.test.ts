@@ -215,6 +215,79 @@ describe('setupSignalHandlers', () => {
     // 128 + 2 (SIGINT = 2)
     expect(process.exit).toHaveBeenCalledWith(130);
   });
+
+  describe('signal forwarding behavior', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    if (process.platform === 'win32') {
+      it('does not call child.kill on SIGINT (relies on OS CTRL_C_EVENT)', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        sigintHandler();
+
+        expect(mockChild.kill).not.toHaveBeenCalled();
+      });
+
+      it('sets a force-kill timer on SIGINT', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        sigintHandler();
+
+        expect(vi.getTimerCount()).toBe(1);
+      });
+
+      it('clears force-kill timer when child exits before timeout', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        sigintHandler();
+        expect(vi.getTimerCount()).toBe(1);
+
+        // Child exits gracefully before timer fires
+        mockChild.emit('exit', 0, null);
+        expect(vi.getTimerCount()).toBe(0);
+      });
+
+      it('creates only one timer for multiple signals', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        const sigtermHandler = registeredHandlers.get('SIGTERM')!;
+
+        sigintHandler();
+        sigtermHandler();
+        sigintHandler();
+
+        expect(vi.getTimerCount()).toBe(1);
+      });
+    } else {
+      it('forwards SIGTERM to child on SIGINT', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        sigintHandler();
+
+        expect(mockChild.kill).toHaveBeenCalledWith('SIGTERM');
+      });
+
+      it('forwards SIGTERM to child on SIGTERM', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess);
+
+        const sigtermHandler = registeredHandlers.get('SIGTERM')!;
+        sigtermHandler();
+
+        expect(mockChild.kill).toHaveBeenCalledWith('SIGTERM');
+      });
+    }
+  });
 });
 
 describe('getProcessStartTime', () => {

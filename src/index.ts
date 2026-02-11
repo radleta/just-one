@@ -101,6 +101,11 @@ async function handleRun(options: CliOptions): Promise<number> {
       pidFileMtime !== null && (await isSameProcessInstance(existingPid, pidFileMtime));
 
     if (shouldKill) {
+      // In ensure mode, if the process is verified running, skip restart
+      if (options.ensure) {
+        log(`Process ${name} is already running (PID: ${existingPid}), skipping`, options);
+        return 0;
+      }
       log(`Killing existing process ${name} (PID: ${existingPid})...`, options);
       killProcess(existingPid);
       await waitForProcessToDie(existingPid);
@@ -138,6 +143,160 @@ async function handleRun(options: CliOptions): Promise<number> {
     logError(`Failed to start process: ${message}`);
     return 1;
   }
+}
+
+async function handleStatus(name: string, options: CliOptions): Promise<number> {
+  const pid = readPid(name, options.pidDir);
+
+  if (pid === null) {
+    log(`Process ${name}: not tracked`, options);
+    return 1;
+  }
+
+  const pidFileMtime = getPidFileMtime(name, options.pidDir);
+  const isSameInstance = pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime));
+
+  if (isSameInstance) {
+    log(`Process ${name}: running (PID ${pid})`, options);
+    return 0;
+  }
+
+  if (isProcessAlive(pid)) {
+    log(`Process ${name}: stopped (PID ${pid} belongs to a different process)`, options);
+  } else {
+    log(`Process ${name}: stopped`, options);
+  }
+  return 1;
+}
+
+async function handleKillAll(options: CliOptions): Promise<number> {
+  const pids = listPids(options.pidDir);
+
+  if (pids.length === 0) {
+    log('No tracked processes', options);
+    return 0;
+  }
+
+  let failed = false;
+  for (const info of pids) {
+    if (!info.exists || info.pid <= 0) {
+      deletePid(info.name, options.pidDir);
+      continue;
+    }
+
+    const pidFileMtime = getPidFileMtime(info.name, options.pidDir);
+    const isSameInstance =
+      pidFileMtime !== null && (await isSameProcessInstance(info.pid, pidFileMtime));
+
+    if (!isSameInstance) {
+      log(`Process ${info.name} (PID: ${info.pid}) is stale, cleaning up`, options);
+      deletePid(info.name, options.pidDir);
+      continue;
+    }
+
+    log(`Killing process ${info.name} (PID: ${info.pid})...`, options);
+    const killed = killProcess(info.pid);
+
+    if (killed) {
+      await waitForProcessToDie(info.pid);
+      deletePid(info.name, options.pidDir);
+      log(`Process ${info.name} killed`, options);
+    } else {
+      logError(`Failed to kill process ${info.name} (PID: ${info.pid})`);
+      failed = true;
+    }
+  }
+
+  return failed ? 1 : 0;
+}
+
+async function handleClean(options: CliOptions): Promise<number> {
+  const pids = listPids(options.pidDir);
+
+  if (pids.length === 0) {
+    log('No PID files to clean', options);
+    return 0;
+  }
+
+  let cleaned = 0;
+  for (const info of pids) {
+    if (!info.exists || info.pid <= 0) {
+      deletePid(info.name, options.pidDir);
+      cleaned++;
+      continue;
+    }
+
+    const pidFileMtime = getPidFileMtime(info.name, options.pidDir);
+    const isSameInstance =
+      pidFileMtime !== null && (await isSameProcessInstance(info.pid, pidFileMtime));
+
+    if (!isSameInstance) {
+      log(`Removing stale PID file: ${info.name} (PID: ${info.pid})`, options);
+      deletePid(info.name, options.pidDir);
+      cleaned++;
+    }
+  }
+
+  if (cleaned === 0) {
+    log('No stale PID files found', options);
+  } else {
+    log(`Cleaned ${cleaned} stale PID file${cleaned === 1 ? '' : 's'}`, options);
+  }
+
+  return 0;
+}
+
+async function handlePid(name: string, options: CliOptions): Promise<number> {
+  const pid = readPid(name, options.pidDir);
+
+  if (pid === null) {
+    log(`No process found with name: ${name}`, options);
+    return 1;
+  }
+
+  const pidFileMtime = getPidFileMtime(name, options.pidDir);
+  const isSameInstance = pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime));
+
+  if (isSameInstance) {
+    log(String(pid), options);
+    return 0;
+  }
+
+  log(`Process ${name} is not running`, options);
+  return 1;
+}
+
+async function handleWait(name: string, options: CliOptions): Promise<number> {
+  const pid = readPid(name, options.pidDir);
+
+  if (pid === null) {
+    log(`No process found with name: ${name}`, options);
+    return 1;
+  }
+
+  // Check if process is alive first, then verify identity if possible.
+  // Wait is non-destructive (we only poll), so we can be lenient with identity checks.
+  if (!isProcessAlive(pid)) {
+    log(`Process ${name} (PID: ${pid}) is not running`, options);
+    return 1;
+  }
+
+  log(`Waiting for process ${name} (PID: ${pid}) to exit...`, options);
+
+  const timeoutMs = options.timeout !== undefined ? options.timeout * 1000 : undefined;
+  const startTime = Date.now();
+  const pollInterval = 500;
+
+  while (isProcessAlive(pid)) {
+    if (timeoutMs !== undefined && Date.now() - startTime >= timeoutMs) {
+      log(`Timeout waiting for process ${name} (PID: ${pid})`, options);
+      return 1;
+    }
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
+  }
+
+  log(`Process ${name} (PID: ${pid}) has exited`, options);
+  return 0;
 }
 
 async function main(): Promise<number> {
@@ -183,7 +342,32 @@ async function main(): Promise<number> {
     return await handleKill(options.kill, options);
   }
 
-  // Handle run
+  // Handle kill all
+  if (options.killAll) {
+    return await handleKillAll(options);
+  }
+
+  // Handle status
+  if (options.status) {
+    return await handleStatus(options.status, options);
+  }
+
+  // Handle clean
+  if (options.clean) {
+    return await handleClean(options);
+  }
+
+  // Handle pid
+  if (options.pid) {
+    return await handlePid(options.pid, options);
+  }
+
+  // Handle wait
+  if (options.wait) {
+    return await handleWait(options.wait, options);
+  }
+
+  // Handle run (with optional --ensure modifier)
   return await handleRun(options);
 }
 

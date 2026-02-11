@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [Unreleased]
+
+### Features
+
+- **cli**: add status check (`-s`/`--status`) to check if a named process is running
+- **cli**: add kill-all (`-K`/`--kill-all`) to kill all tracked processes at once
+- **cli**: add ensure mode (`-e`/`--ensure`) for idempotent process start
+- **cli**: add clean (`--clean`) to remove stale PID files
+- **cli**: add PID output (`-p`/`--pid`) to print raw PID for scripting
+- **cli**: add wait (`-w`/`--wait`) with optional `--timeout` to block until process exits
+
+### Bug Fixes
+
+- **windows**: allow child process to run cleanup handlers on Ctrl+C instead of force-killing immediately ([#graceful-shutdown](https://github.com/radleta/just-one/issues/graceful-shutdown))
+
+Previously, `setupSignalHandlers` called `process.kill(pid, 'SIGINT')` on Windows which invokes `TerminateProcess` — killing the child instantly without running cleanup handlers (e.g., removing temp files, closing connections). Now, `just-one` relies on the OS-delivered `CTRL_C_EVENT` via the shared console and only force-kills after a 2-second grace period if the child hasn't exited.
+
 ## [1.1.0](https://github.com/radleta/just-one/compare/v1.0.0...v1.1.0) (2026-01-29)
 
 ### Features
