@@ -974,7 +974,10 @@ describe('Daemon Mode', () => {
   });
 
   it('captures stdout to log file', async () => {
-    // Use a command that writes output and exits
+    // Write a helper script to avoid Windows cmd.exe quoting issues with node -e
+    const scriptPath = join(TEST_PID_DIR, '_echo.js');
+    writeFileSync(scriptPath, 'console.log("hello from daemon"); console.log("second line");');
+
     const result = await runCli([
       '-n',
       'test-daemon-output',
@@ -983,8 +986,7 @@ describe('Daemon Mode', () => {
       TEST_PID_DIR,
       '--',
       'node',
-      '-e',
-      'console.log("hello from daemon"); console.log("second line")',
+      scriptPath,
     ]);
 
     expect(result.code).toBe(0);
@@ -1051,6 +1053,10 @@ describe('Daemon Mode', () => {
 
     expect(existsSync(logPath)).toBe(true);
 
+    // Write helper script to avoid Windows cmd.exe quoting issues
+    const scriptPath = join(TEST_PID_DIR, '_rotate-echo.js');
+    writeFileSync(scriptPath, 'console.log("after rotation");');
+
     // Start daemon — should trigger rotation
     const result = await runCli([
       '-n',
@@ -1060,8 +1066,7 @@ describe('Daemon Mode', () => {
       TEST_PID_DIR,
       '--',
       'node',
-      '-e',
-      'console.log("after rotation")',
+      scriptPath,
     ]);
     expect(result.code).toBe(0);
 
@@ -1131,6 +1136,10 @@ describe('Logs Command', () => {
   });
 
   it('shows daemon logs end-to-end', async () => {
+    // Write helper script to avoid Windows cmd.exe quoting issues
+    const scriptPath = join(TEST_PID_DIR, '_logs-echo.js');
+    writeFileSync(scriptPath, 'console.log("daemon output here");');
+
     // Start a daemon that writes output
     const result1 = await runCli([
       '-n',
@@ -1140,8 +1149,7 @@ describe('Logs Command', () => {
       TEST_PID_DIR,
       '--',
       'node',
-      '-e',
-      'console.log("daemon output here")',
+      scriptPath,
     ]);
     expect(result1.code).toBe(0);
 
