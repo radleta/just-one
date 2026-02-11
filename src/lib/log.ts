@@ -8,8 +8,6 @@ import {
   renameSync,
   unlinkSync,
   readFileSync,
-  watchFile,
-  unwatchFile,
   openSync,
   readSync,
   closeSync,
@@ -125,7 +123,7 @@ export interface TailHandle {
 }
 
 /**
- * Follow a log file in real-time using fs.watchFile (polling).
+ * Follow a log file in real-time using setInterval polling.
  * Reads from last byte offset on each change, calling onLine for each new line.
  * Optionally emits the last N lines of existing content first.
  */
@@ -151,13 +149,17 @@ export function tailLogFile(name: string, pidDir: string, options: TailOptions):
     // File may not exist yet, start from 0
   }
 
-  let stopped = false;
   let partialLine = '';
 
-  const onFileChange = (curr: { size: number }) => {
-    if (stopped) return;
+  const checkForChanges = () => {
+    let newSize: number;
+    try {
+      if (!existsSync(logPath)) return;
+      newSize = statSync(logPath).size;
+    } catch {
+      return;
+    }
 
-    const newSize = curr.size;
     if (newSize <= offset) {
       // File was truncated or unchanged — reset to new size
       offset = newSize;
@@ -200,12 +202,11 @@ export function tailLogFile(name: string, pidDir: string, options: TailOptions):
     }
   };
 
-  watchFile(logPath, { interval: pollIntervalMs }, onFileChange);
+  const intervalId = setInterval(checkForChanges, pollIntervalMs);
 
   return {
     stop: () => {
-      stopped = true;
-      unwatchFile(logPath, onFileChange);
+      clearInterval(intervalId);
     },
   };
 }
