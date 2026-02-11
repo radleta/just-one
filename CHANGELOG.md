@@ -10,6 +10,23 @@ All notable changes to this project will be documented in this file. See [standa
 - **cli:** add log viewing and real-time follow mode (`--logs`/`-L`, `--tail`/`-f`, `--lines`)
 - **log:** add automatic log rotation at 10MB with 1 backup
 - **cli:** `--clean` now removes orphaned log files alongside stale PID files
+- **process:** graceful kill with SIGKILL escalation (`SIGTERM` → grace period → `SIGKILL`)
+- **cli:** add `--grace`/`-g` option to configure kill grace period (default: 5s)
+
+### Bug Fixes
+
+- **process:** fix ignored return value from `waitForProcessToDie` in kill flows
+- **e2e:** fix flaky daemon replacement and process replacement tests (polling instead of fixed delays)
+
+### Breaking Changes
+
+- **process:** default kill wait timeout increased from 2s to 5s (configurable with `--grace`)
+- **engines:** minimum Node.js version raised from 18 to 20 (Node 18 reached EOL April 2025)
+
+### Chores
+
+- add `format:check` step to CI workflow
+- fix Prettier formatting drift in 4 files
 
 ## [1.2.0](https://github.com/radleta/just-one/compare/v1.1.0...v1.2.0) (2026-02-11)
 

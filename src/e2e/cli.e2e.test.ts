@@ -125,6 +125,15 @@ function isProcessRunning(pid: number): boolean {
   }
 }
 
+// Helper to wait for a process to die with polling (avoids flaky fixed-delay waits)
+async function waitForProcessDeath(pid: number, timeoutMs: number): Promise<boolean> {
+  const start = Date.now();
+  while (isProcessRunning(pid) && Date.now() - start < timeoutMs) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  return !isProcessRunning(pid);
+}
+
 describe('CLI E2E Tests', () => {
   beforeEach(() => {
     // Clean up test PID directory
@@ -331,11 +340,9 @@ describe('CLI E2E Tests', () => {
       ]);
       const child2 = spawn(cmd2, args2, { stdio: 'pipe' });
 
-      // Wait for kill + respawn (longer on Windows due to taskkill)
-      await new Promise(resolve => setTimeout(resolve, isWindows ? 5000 : 3000));
-
-      // First process should be dead
-      expect(isProcessRunning(pid1!)).toBe(false);
+      // Wait for first process to die (polling instead of fixed delay)
+      const died = await waitForProcessDeath(pid1!, isWindows ? 15000 : 10000);
+      expect(died).toBe(true);
 
       // PID file should exist with new PID
       const pid2 = readPidFile('test-replace');
@@ -977,11 +984,9 @@ describe('Daemon Mode', () => {
     ]);
     expect(result2.code).toBe(0);
 
-    // Wait for kill + respawn
-    await new Promise(resolve => setTimeout(resolve, isWindows ? 5000 : 2000));
-
-    // First process should be dead
-    expect(isProcessRunning(pid1!)).toBe(false);
+    // Wait for first process to die (polling instead of fixed delay)
+    const died = await waitForProcessDeath(pid1!, isWindows ? 15000 : 10000);
+    expect(died).toBe(true);
 
     // Second process should be alive
     const pid2 = readPidFile('test-daemon-replace');

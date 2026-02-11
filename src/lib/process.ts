@@ -8,8 +8,9 @@ import pidusage from 'pidusage';
 
 const isWindows = process.platform === 'win32';
 
-// Constants for process polling
-const DEFAULT_WAIT_TIMEOUT_MS = 2000;
+// Constants for process termination
+const DEFAULT_GRACE_PERIOD_MS = 5000; // How long to wait after SIGTERM before escalating
+const FORCE_KILL_WAIT_MS = 2000; // How long to wait after SIGKILL for process to die
 const CHECK_INTERVAL_MS = 100;
 
 /**
@@ -133,11 +134,11 @@ function tryKillUnix(pid: number): boolean {
 /**
  * Wait for a process to die, with timeout
  * @param pid - Process ID to wait for
- * @param timeoutMs - Maximum time to wait (default: 2000ms)
+ * @param timeoutMs - Maximum time to wait (default: 5000ms)
  */
 export async function waitForProcessToDie(
   pid: number,
-  timeoutMs: number = DEFAULT_WAIT_TIMEOUT_MS
+  timeoutMs: number = DEFAULT_GRACE_PERIOD_MS
 ): Promise<boolean> {
   const startTime = Date.now();
 
@@ -149,6 +150,79 @@ export async function waitForProcessToDie(
   }
 
   return !isProcessAlive(pid);
+}
+
+/**
+ * Force kill a process by PID using SIGKILL (Unix) or taskkill /F (Windows).
+ * This is a last resort after SIGTERM fails.
+ */
+export function forceKillProcess(pid: number): boolean {
+  if (!isValidPid(pid) || !isProcessAlive(pid)) {
+    return false;
+  }
+
+  try {
+    if (isWindows) {
+      // PID is validated as a safe integer above before interpolation
+      execSync(`taskkill /PID ${pid} /T /F`, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } else {
+      // Try process group first, then individual PID
+      let killed = false;
+      try {
+        process.kill(-pid, 'SIGKILL');
+        killed = true;
+      } catch {
+        /* group kill may fail */
+      }
+      try {
+        process.kill(pid, 'SIGKILL');
+        killed = true;
+      } catch {
+        /* individual kill may fail */
+      }
+      if (!killed) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Terminate a process with graceful shutdown and SIGKILL escalation.
+ *
+ * Flow: SIGTERM → wait grace period → SIGKILL → wait 2s → give up
+ *
+ * @param pid - Process ID to terminate
+ * @param gracePeriodMs - How long to wait after SIGTERM before escalating (default: 5000ms)
+ * @returns true if process is dead, false if it could not be killed
+ */
+export async function terminateProcess(pid: number, gracePeriodMs?: number): Promise<boolean> {
+  const grace = gracePeriodMs ?? DEFAULT_GRACE_PERIOD_MS;
+
+  if (!isValidPid(pid)) {
+    return false;
+  }
+
+  // Already dead? Nothing to do.
+  if (!isProcessAlive(pid)) {
+    return true;
+  }
+
+  // Step 1: Send SIGTERM (or taskkill /F on Windows)
+  killProcess(pid);
+
+  // Step 2: Wait for graceful shutdown
+  const died = await waitForProcessToDie(pid, grace);
+  if (died) {
+    return true;
+  }
+
+  // Step 3: Escalate to SIGKILL (Unix) / re-attempt taskkill (Windows)
+  forceKillProcess(pid);
+  return await waitForProcessToDie(pid, FORCE_KILL_WAIT_MS);
 }
 
 export interface SpawnResult {

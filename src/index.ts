@@ -8,8 +8,7 @@ import { parseArgs, validateOptions, getHelpText, type CliOptions } from './lib/
 import { readPid, writePid, deletePid, listPids, getPidFileMtime } from './lib/pid.js';
 import {
   isProcessAlive,
-  killProcess,
-  waitForProcessToDie,
+  terminateProcess,
   spawnCommand,
   spawnCommandDaemon,
   setupSignalHandlers,
@@ -62,10 +61,10 @@ async function handleKill(name: string, options: CliOptions): Promise<number> {
   }
 
   log(`Killing process ${name} (PID: ${pid})...`, options);
-  const killed = killProcess(pid);
+  const graceMs = options.grace !== undefined ? options.grace * 1000 : undefined;
+  const terminated = await terminateProcess(pid, graceMs);
 
-  if (killed) {
-    await waitForProcessToDie(pid);
+  if (terminated) {
     deletePid(name, options.pidDir);
     log(`Process ${name} killed`, options);
     return 0;
@@ -116,8 +115,11 @@ async function handleRun(options: CliOptions): Promise<number> {
         return 0;
       }
       log(`Killing existing process ${name} (PID: ${existingPid})...`, options);
-      killProcess(existingPid);
-      await waitForProcessToDie(existingPid);
+      const graceMs = options.grace !== undefined ? options.grace * 1000 : undefined;
+      const terminated = await terminateProcess(existingPid, graceMs);
+      if (!terminated) {
+        logError(`Warning: process ${existingPid} may still be running`);
+      }
     } else if (isProcessAlive(existingPid)) {
       // PID exists but doesn't match our process - likely PID reuse
       log(
@@ -217,10 +219,10 @@ async function handleKillAll(options: CliOptions): Promise<number> {
     }
 
     log(`Killing process ${info.name} (PID: ${info.pid})...`, options);
-    const killed = killProcess(info.pid);
+    const graceMs = options.grace !== undefined ? options.grace * 1000 : undefined;
+    const terminated = await terminateProcess(info.pid, graceMs);
 
-    if (killed) {
-      await waitForProcessToDie(info.pid);
+    if (terminated) {
       deletePid(info.name, options.pidDir);
       log(`Process ${info.name} killed`, options);
     } else {

@@ -162,6 +162,7 @@ just-one -n storybook -d /tmp -- npx storybook dev
 | `--pid <name>`     | `-p`  | Print the PID of a named process                   |
 | `--wait <name>`    | `-w`  | Wait for a named process to exit                   |
 | `--timeout <secs>` | `-t`  | Timeout in seconds (use with `--wait`)             |
+| `--grace <secs>`   | `-g`  | Grace period before force kill (default: 5s)       |
 | `--clean`          |       | Remove stale PID files and orphaned log files      |
 | `--list`           | `-l`  | List all tracked processes and their status        |
 | `--pid-dir <dir>`  | `-d`  | Directory for PID files (default: `.just-one/`)    |
@@ -195,9 +196,10 @@ just-one -n storybook -d /tmp -- npx storybook dev
 
 1. Check if a PID file exists for that name
 2. If yes, verify it's the same process we started (by comparing start times)
-3. If verified, kill that specific process (and its children)
-4. Start the new process
-5. Save its PID for next time
+3. If verified, send SIGTERM and wait up to 5 seconds (configurable with `--grace`)
+4. If still alive, escalate to SIGKILL (force kill)
+5. Start the new process
+6. Save its PID for next time
 
 ### PID Reuse Protection
 

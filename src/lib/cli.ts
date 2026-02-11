@@ -13,6 +13,7 @@ export interface CliOptions {
   pid?: string;
   wait?: string;
   timeout?: number;
+  grace?: number;
   daemon: boolean;
   logs?: string;
   tail: boolean;
@@ -88,6 +89,7 @@ export function parseArgs(args: string[]): ParseOutput {
     pid: undefined,
     wait: undefined,
     timeout: undefined,
+    grace: undefined,
     daemon: false,
     logs: undefined,
     tail: false,
@@ -322,6 +324,21 @@ export function parseArgs(args: string[]): ParseOutput {
       continue;
     }
 
+    // Grace period for kill (requires numeric value)
+    if (arg === '--grace' || arg === '-g') {
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) {
+        return { success: false, error: 'Option --grace requires a positive number (seconds)' };
+      }
+      const num = Number(value);
+      if (isNaN(num) || num <= 0) {
+        return { success: false, error: 'Option --grace requires a positive number (seconds)' };
+      }
+      options.grace = num;
+      i += 2;
+      continue;
+    }
+
     // Unknown option
     if (arg.startsWith('-')) {
       return { success: false, error: `Unknown option: ${arg}` };
@@ -439,6 +456,7 @@ Options:
   -p, --pid <name>       Print the PID of a named process
   -w, --wait <name>      Wait for a named process to exit
   -t, --timeout <secs>   Timeout in seconds (use with --wait)
+  -g, --grace <secs>     Grace period before force kill (default: 5s)
   --clean                Remove stale PID files and orphaned log files
   -l, --list             List all tracked processes and their status
   -d, --pid-dir <dir>    Directory for PID files (default: .just-one/)

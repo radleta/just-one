@@ -404,6 +404,72 @@ describe('parseArgs', () => {
     });
   });
 
+  describe('grace option', () => {
+    it('parses --grace with numeric value', () => {
+      const result = parseArgs(['-n', 'myapp', '--grace', '10', '--', 'sleep', '60']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.grace).toBe(10);
+      }
+    });
+
+    it('parses -g with numeric value', () => {
+      const result = parseArgs(['-n', 'myapp', '-g', '3', '--', 'sleep', '60']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.grace).toBe(3);
+      }
+    });
+
+    it('accepts decimal values', () => {
+      const result = parseArgs(['-n', 'myapp', '--grace', '2.5', '--', 'sleep', '60']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.grace).toBe(2.5);
+      }
+    });
+
+    it('returns error when --grace has no value', () => {
+      const result = parseArgs(['--grace']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--grace requires a positive number');
+      }
+    });
+
+    it('returns error when --grace value is not a number', () => {
+      const result = parseArgs(['-n', 'myapp', '--grace', 'abc']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--grace requires a positive number');
+      }
+    });
+
+    it('returns error when --grace value is zero', () => {
+      const result = parseArgs(['-n', 'myapp', '--grace', '0']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--grace requires a positive number');
+      }
+    });
+
+    it('returns error when --grace value starts with dash', () => {
+      const result = parseArgs(['--grace', '-5']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--grace requires a positive number');
+      }
+    });
+
+    it('defaults grace to undefined', () => {
+      const result = parseArgs(['-n', 'myapp', '--', 'sleep', '60']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.grace).toBeUndefined();
+      }
+    });
+  });
+
   describe('daemon flag', () => {
     it('parses --daemon flag', () => {
       const result = parseArgs(['-n', 'myapp', '--daemon', '--', 'node', 'server.js']);
@@ -581,6 +647,7 @@ describe('validateOptions', () => {
     pid: undefined,
     wait: undefined,
     timeout: undefined,
+    grace: undefined,
     daemon: false,
     logs: undefined,
     tail: false,
@@ -755,6 +822,7 @@ describe('getHelpText', () => {
     expect(help).toContain('--pid');
     expect(help).toContain('--wait');
     expect(help).toContain('--timeout');
+    expect(help).toContain('--grace');
     expect(help).toContain('--daemon');
     expect(help).toContain('--logs');
     expect(help).toContain('--tail');

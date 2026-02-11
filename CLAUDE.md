@@ -94,7 +94,9 @@ Running `taskkill /IM node.exe /F` will kill EVERY node process on the machine, 
 
 The safe implementation is in `src/lib/process.ts`:
 
-- `killProcess(pid)` - Only kills specific PID
+- `terminateProcess(pid, graceMs?)` - SIGTERM → wait grace period → SIGKILL escalation (preferred)
+- `killProcess(pid)` - Sends SIGTERM to specific PID only
+- `forceKillProcess(pid)` - Sends SIGKILL to specific PID (last resort)
 - `isProcessAlive(pid)` - Checks if specific PID is running
 - `isValidPid(pid)` - Validates PID range 1-4194304
 - `getProcessStartTime(pid)` - Gets process start time via pidusage

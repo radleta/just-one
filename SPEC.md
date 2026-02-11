@@ -71,6 +71,7 @@ npx just-one -n storybook --pid-dir /tmp -- npx storybook dev
 | `--name <name>`   | `-n`  | Required. Name to identify this process         |
 | `--kill <name>`   | `-k`  | Kill the named process and exit                 |
 | `--list`          | `-l`  | List all tracked processes and their status     |
+| `--grace <secs>`  | `-g`  | Grace period before force kill (default: 5s)    |
 | `--pid-dir <dir>` | `-d`  | Directory for PID files (default: `.just-one/`) |
 | `--quiet`         | `-q`  | Suppress output                                 |
 | `--help`          | `-h`  | Show help                                       |
