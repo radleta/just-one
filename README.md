@@ -246,7 +246,7 @@ just-one -n storybook-docs -- storybook dev -p 6007
 
 ## Requirements
 
-- Node.js >= 18.0.0
+- Node.js >= 20.0.0
 
 ## Development
 

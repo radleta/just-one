@@ -210,7 +210,7 @@ npm run release:major    # Force major version bump
 - **Package:** `just-one`
 - **Author:** Richard Adleta
 - **License:** MIT
-- **Engines:** Node 18+
+- **Engines:** Node 20+
 - **Dependencies:** [pidusage](https://github.com/soyuka/pidusage) (cross-platform process metrics for PID verification)
 
 ## Cross-Platform Notes

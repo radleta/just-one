@@ -11,6 +11,7 @@ Error: Port 6006 is already in use
 ```
 
 Existing solutions:
+
 - **kill-port**: Kills ANY process on that port (imprecise, might kill unrelated processes)
 - **Manual**: Find PID, kill it, restart (tedious)
 - **pm2**: Overkill for dev servers
@@ -65,15 +66,15 @@ npx just-one -n storybook --pid-dir /tmp -- npx storybook dev
 
 ## CLI Options
 
-| Option | Alias | Description |
-|--------|-------|-------------|
-| `--name <name>` | `-n` | Required. Name to identify this process |
-| `--kill <name>` | `-k` | Kill the named process and exit |
-| `--list` | `-l` | List all tracked processes and their status |
-| `--pid-dir <dir>` | `-d` | Directory for PID files (default: `.just-one/`) |
-| `--quiet` | `-q` | Suppress output |
-| `--help` | `-h` | Show help |
-| `--version` | `-v` | Show version |
+| Option            | Alias | Description                                     |
+| ----------------- | ----- | ----------------------------------------------- |
+| `--name <name>`   | `-n`  | Required. Name to identify this process         |
+| `--kill <name>`   | `-k`  | Kill the named process and exit                 |
+| `--list`          | `-l`  | List all tracked processes and their status     |
+| `--pid-dir <dir>` | `-d`  | Directory for PID files (default: `.just-one/`) |
+| `--quiet`         | `-q`  | Suppress output                                 |
+| `--help`          | `-h`  | Show help                                       |
+| `--version`       | `-v`  | Show version                                    |
 
 ## How It Works
 
@@ -107,10 +108,10 @@ Kill (--kill):
 
 ### Cross-Platform
 
-| Platform | Kill Command |
-|----------|--------------|
-| Windows | `taskkill /PID <pid> /T /F` (kills tree) |
-| Unix | `kill -SIGTERM -<pid>` (process group) then `kill -SIGTERM <pid>` |
+| Platform | Kill Command                                                      |
+| -------- | ----------------------------------------------------------------- |
+| Windows  | `taskkill /PID <pid> /T /F` (kills tree)                          |
+| Unix     | `kill -SIGTERM -<pid>` (process group) then `kill -SIGTERM <pid>` |
 
 ## Examples
 
@@ -146,21 +147,22 @@ npx just-one -n storybook-docs -- storybook dev -p 6007
 
 ## Comparison with Alternatives
 
-| Feature | just-one | kill-port | pm2 |
-|---------|----------|-----------|-----|
-| Kills by PID (precise) | Yes | No (by port) | Yes |
-| Cross-platform | Yes | Yes | Yes |
-| Zero config | Yes | Yes | No |
-| Remembers processes | Yes (PID file) | No | Yes (daemon) |
-| Lightweight | ~150 LOC | ~100 LOC | Heavy |
-| Daemon required | No | No | Yes |
-| npx friendly | Yes | Yes | No |
+| Feature                | just-one       | kill-port    | pm2          |
+| ---------------------- | -------------- | ------------ | ------------ |
+| Kills by PID (precise) | Yes            | No (by port) | Yes          |
+| Cross-platform         | Yes            | Yes          | Yes          |
+| Zero config            | Yes            | Yes          | No           |
+| Remembers processes    | Yes (PID file) | No           | Yes (daemon) |
+| Lightweight            | ~150 LOC       | ~100 LOC     | Heavy        |
+| Daemon required        | No             | No           | Yes          |
+| npx friendly           | Yes            | Yes          | No           |
 
 ## Technical Details
 
 ### Dependencies
 
 None - uses only Node.js built-ins:
+
 - `child_process` (spawn, execSync)
 - `fs` (readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync)
 - `path` (join, dirname)
@@ -168,15 +170,15 @@ None - uses only Node.js built-ins:
 
 ### Node.js Version
 
-Requires Node.js >= 18.0.0 (for stable ES modules)
+Requires Node.js >= 20.0.0 (for stable ES modules)
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| 0 | Success (or child exited with 0) |
-| 1 | Error (invalid args, spawn failed, etc.) |
-| * | Child's exit code (passed through) |
+| Code | Meaning                                  |
+| ---- | ---------------------------------------- |
+| 0    | Success (or child exited with 0)         |
+| 1    | Error (invalid args, spawn failed, etc.) |
+| \*   | Child's exit code (passed through)       |
 
 ## Edge Cases
 
