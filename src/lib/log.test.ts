@@ -227,16 +227,17 @@ describe('Log operations', () => {
       // Append new content
       appendFileSync(logPath, 'new line 1\nnew line 2\n');
 
-      // Poll until watchFile detects the change (fs.watchFile can be slow under WSL2)
-      for (let i = 0; i < 30 && received.length < 2; i++) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+      // Poll until watchFile detects the change
+      // fs.watchFile polling can be very slow on CI runners and under WSL2
+      for (let i = 0; i < 80 && received.length < 2; i++) {
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
 
       expect(received).toContain('new line 1');
       expect(received).toContain('new line 2');
 
       handle.stop();
-    }, 10_000);
+    }, 20_000);
 
     it('stops emitting after stop() is called', async () => {
       const logPath = getLogFilePath('myapp', TEST_DIR);
