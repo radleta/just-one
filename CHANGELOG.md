@@ -1,32 +1,24 @@
 # Changelog
 
-All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines. Version numbers and commit links are automatically managed by `npm run release`.
+All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
-## [Unreleased](https://github.com/radleta/just-one/compare/v1.2.0...HEAD)
+## [1.3.0](https://github.com/radleta/just-one/compare/v1.2.0...v1.3.0) (2026-02-12)
 
 ### Features
 
-- **cli:** add daemon mode with log file capture (`--daemon`/`-D`)
-- **cli:** add log viewing and real-time follow mode (`--logs`/`-L`, `--tail`/`-f`, `--lines`)
-- **log:** add automatic log rotation at 10MB with 1 backup
-- **cli:** `--clean` now removes orphaned log files alongside stale PID files
-- **process:** graceful kill with SIGKILL escalation (`SIGTERM` → grace period → `SIGKILL`)
-- **cli:** add `--grace`/`-g` option to configure kill grace period (default: 5s)
+- **cli:** add daemon mode with log capture, viewing, and real-time follow ([4b6b7ae](https://github.com/radleta/just-one/commit/4b6b7ae84117c895782d272aa0ae62f107fb2e13))
+- **process:** add graceful kill with SIGKILL escalation and --grace flag ([84f90d9](https://github.com/radleta/just-one/commit/84f90d90652f376bcac9ae781967578a657c3dd4))
 
 ### Bug Fixes
 
-- **process:** fix ignored return value from `waitForProcessToDie` in kill flows
-- **e2e:** fix flaky daemon replacement and process replacement tests (polling instead of fixed delays)
-
-### Breaking Changes
-
-- **process:** default kill wait timeout increased from 2s to 5s (configurable with `--grace`)
-- **engines:** minimum Node.js version raised from 18 to 20 (Node 18 reached EOL April 2025)
-
-### Chores
-
-- add `format:check` step to CI workflow
-- fix Prettier formatting drift in 4 files
+- **ci:** enforce LF line endings to fix Windows format check ([e208149](https://github.com/radleta/just-one/commit/e2081493b21663011ef9431944bd25eb22d121aa))
+- **log:** replace fs.watchFile with setInterval polling in tailLogFile ([26200fc](https://github.com/radleta/just-one/commit/26200fcb47632800fecb508b85696ad3ceffadea))
+- **process:** pass args array to spawn on Windows instead of joining ([5e3d13a](https://github.com/radleta/just-one/commit/5e3d13ace04175dfb92404bd06aac2e1dadcf04d))
+- **process:** remove shell: true from daemon mode on Windows ([2411f5f](https://github.com/radleta/just-one/commit/2411f5f8a7ee43aac00d784a360d996d02fb715d))
+- **tests:** increase tailLogFile poll timeout for slow CI runners ([bde9a92](https://github.com/radleta/just-one/commit/bde9a92839f986e0270ca9fb5f81ea98d9228aef))
+- **tests:** stabilize flaky polling-based tests ([02d4639](https://github.com/radleta/just-one/commit/02d463928b3e4f59829babd24bd74549c6fc9a68))
+- **tests:** stabilize Windows E2E tests for daemon mode ([92dee91](https://github.com/radleta/just-one/commit/92dee9100d0eae133d5db045e0c65425fb73669f))
+- **tests:** use script files instead of node -e in daemon tests ([bc47ab5](https://github.com/radleta/just-one/commit/bc47ab5ab98076813bedb58dd3a7d869d3e738e7))
 
 ## [1.2.0](https://github.com/radleta/just-one/compare/v1.1.0...v1.2.0) (2026-02-11)
 
