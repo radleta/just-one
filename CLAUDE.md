@@ -23,7 +23,7 @@
 - `lib/cli.ts` - Command-line argument parsing and validation
 - `lib/process.ts` - Process spawn/kill/management logic (CRITICAL - see safety section)
 - `lib/pid.ts` - PID file read/write/delete/list operations
-- `lib/log.ts` - Log file operations for daemon mode (read, write, rotate, tail)
+- `lib/log.ts` - Log file operations (read, write, rotate, tail) for both foreground and daemon modes
 
 **Test files:**
 
@@ -38,7 +38,8 @@
 - **Pure function extraction** - Business logic in `lib/*.ts` (testable without mocking)
 - **Cross-platform** - Windows uses `taskkill`, Unix uses `process.kill()`
 - **PID validation** - All PIDs validated before shell interpolation
-- **Daemon mode** - Detached process with `stdio: ['ignore', logFd, logFd]` for log capture
+- **Log capture** - Both modes write to `.log` files; foreground tees via piped streams, daemon uses fd-based stdio
+- **Daemon mode** - Detached process with `stdio: ['ignore', logFd, logFd]`
 - **Log rotation** - Automatic at spawn time when >10MB (keeps 1 backup as `.log.1`)
 
 **Build output:**
@@ -229,7 +230,8 @@ npm run release:major    # Force major version bump
 **IMPORTANT: Daemon mode spawn on Windows:**
 
 - **NEVER** use `shell: true` + `detached: true` with fd-based stdio — `cmd.exe` doesn't pass inherited file descriptors to grandchild processes (known Node.js issue). Log files will be created but stay empty.
-- Foreground mode (`spawnCommand`) can use `shell: true` because it uses `stdio: 'inherit'` (not fd-based) and `detached: false` on Windows.
+- Foreground mode (`spawnCommand`) can use `shell: true` because it uses piped stdio (not fd-based) and `detached: false` on Windows.
+- **Foreground piped stdio + Windows signals:** With `stdio: ['inherit', 'pipe', 'pipe']`, stdin is inherited but stdout/stderr are piped. `CTRL_C_EVENT` may not be delivered to the child, so `setupSignalHandlers` explicitly sends `SIGTERM` when `pipedStdio=true`.
 - `spawn()` with `shell: false` still finds executables in PATH via `CreateProcess` on Windows.
 
 ## PID Reuse Protection

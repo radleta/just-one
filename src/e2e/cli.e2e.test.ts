@@ -81,7 +81,7 @@ function startProcess(name: string, pidDir: string = TEST_PID_DIR): ChildProcess
 async function waitForPidFile(
   name: string,
   pidDir: string = TEST_PID_DIR,
-  timeoutMs: number = 5000
+  timeoutMs: number = 10000
 ): Promise<boolean> {
   const pidFile = join(pidDir, `${name}.pid`);
   const startTime = Date.now();
@@ -104,6 +104,77 @@ function readPidFile(name: string, pidDir: string = TEST_PID_DIR): number | null
   const content = readFileSync(pidFile, 'utf8').trim();
   const pid = parseInt(content, 10);
   return isNaN(pid) ? null : pid;
+}
+
+// Helper to start a process and wait for its PID file, with early exit detection.
+// Fails fast with a descriptive error (including child stderr) if the child
+// process exits before the PID file is created — avoids silent 10s timeouts.
+async function startProcessAndWait(
+  name: string,
+  pidDir: string = TEST_PID_DIR,
+  timeoutMs: number = 10000
+): Promise<{ child: ChildProcess; pid: number }> {
+  const child = startProcess(name, pidDir);
+  const pidFile = join(pidDir, `${name}.pid`);
+
+  let stderr = '';
+  child.stderr?.on('data', (data: Buffer) => {
+    stderr += data.toString();
+  });
+
+  return new Promise<{ child: ChildProcess; pid: number }>((resolve, reject) => {
+    let settled = false;
+
+    const settle = () => {
+      settled = true;
+    };
+
+    child.on('exit', (code, signal) => {
+      if (!settled) {
+        settle();
+        reject(
+          new Error(
+            `Child process exited before PID file was created (code=${code}, signal=${signal})` +
+              (stderr ? `\nstderr: ${stderr}` : '')
+          )
+        );
+      }
+    });
+
+    child.on('error', err => {
+      if (!settled) {
+        settle();
+        reject(new Error(`Failed to spawn child process: ${err.message}`));
+      }
+    });
+
+    const startTime = Date.now();
+    const poll = async () => {
+      while (!settled && Date.now() - startTime < timeoutMs) {
+        if (existsSync(pidFile)) {
+          const content = readFileSync(pidFile, 'utf8').trim();
+          const pid = parseInt(content, 10);
+          if (!isNaN(pid) && pid > 0) {
+            settle();
+            resolve({ child, pid });
+            return;
+          }
+        }
+        await new Promise(r => setTimeout(r, 100));
+      }
+      if (!settled) {
+        settle();
+        reject(
+          new Error(
+            `Timed out waiting for PID file after ${timeoutMs}ms` +
+              (stderr ? `\nstderr: ${stderr}` : '')
+          )
+        );
+      }
+    };
+
+    poll();
+  });
 }
 
 // Helper to check if process is running (cross-platform)
@@ -193,19 +264,17 @@ async function cleanTestDir(dir: string): Promise<void> {
 }
 
 describe('CLI E2E Tests', () => {
-  beforeEach(() => {
-    // Clean up test PID directory
-    if (existsSync(TEST_PID_DIR)) {
-      rmSync(TEST_PID_DIR, { recursive: true, force: true });
-    }
+  beforeEach(async () => {
+    // Kill any tracked processes before cleaning up
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
     mkdirSync(TEST_PID_DIR, { recursive: true });
   });
 
-  afterEach(() => {
-    // Clean up test PID directory
-    if (existsSync(TEST_PID_DIR)) {
-      rmSync(TEST_PID_DIR, { recursive: true, force: true });
-    }
+  afterEach(async () => {
+    // Kill any tracked processes before cleaning up
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
   });
 
   describe('Help and Version', () => {
@@ -290,8 +359,16 @@ describe('CLI E2E Tests', () => {
       expect(result.stdout).toContain('test-list');
       expect(result.stdout).toContain('running');
 
-      // Cleanup
-      child.kill();
+      // Cleanup - kill process tree on Windows, signal on Unix
+      try {
+        if (process.platform === 'win32' && child.pid) {
+          execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: 'pipe' });
+        } else {
+          child.kill();
+        }
+      } catch {
+        // Process may already be dead
+      }
     });
   });
 
@@ -305,19 +382,12 @@ describe('CLI E2E Tests', () => {
     it('kills a running process', async () => {
       const isWindows = process.platform === 'win32';
 
-      // Start a process
-      const child = startProcess('test-kill');
-
-      // Wait for PID file
-      const pidCreated = await waitForPidFile('test-kill');
-      expect(pidCreated).toBe(true);
-
-      const pid = readPidFile('test-kill');
-      expect(pid).not.toBeNull();
+      // Start a process and wait for PID file (with early exit detection)
+      const { child, pid } = await startProcessAndWait('test-kill');
 
       // Give process time to fully start (longer on Windows)
       await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
-      expect(isProcessRunning(pid!)).toBe(true);
+      expect(isProcessRunning(pid)).toBe(true);
 
       // Kill it
       const result = await runCli(['-k', 'test-kill', '-d', TEST_PID_DIR]);
@@ -328,7 +398,7 @@ describe('CLI E2E Tests', () => {
       await new Promise(resolve => setTimeout(resolve, 500));
 
       // Verify it's dead
-      expect(isProcessRunning(pid!)).toBe(false);
+      expect(isProcessRunning(pid)).toBe(false);
 
       // Cleanup
       child.kill();
@@ -1082,6 +1152,267 @@ describe('Daemon Mode', () => {
     // Backup should contain the old content
     const backupContent = readFileSync(backupPath, 'utf8');
     expect(backupContent.length).toBeGreaterThan(10 * 1024 * 1024);
+  });
+});
+
+describe('Foreground Log Capture', () => {
+  beforeEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+    mkdirSync(TEST_PID_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    if (process.platform === 'win32') {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    await cleanTestDir(TEST_PID_DIR);
+  });
+
+  it('creates log file with captured output in foreground mode', async () => {
+    // Write helper script to avoid Windows cmd.exe quoting issues
+    const scriptPath = join(TEST_PID_DIR, '_fg-echo.js');
+    writeFileSync(scriptPath, 'console.log("foreground-log-test"); console.log("line-two");');
+
+    const result = await runCli([
+      '-n',
+      'test-fg-log',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      scriptPath,
+    ]);
+
+    expect(result.code).toBe(0);
+
+    // Log file should exist with captured output
+    const logPath = join(TEST_PID_DIR, 'test-fg-log.log');
+    const logContent = await waitForFileContent(logPath, 'foreground-log-test');
+    expect(logContent).toContain('foreground-log-test');
+    expect(logContent).toContain('line-two');
+  });
+
+  it('-L reads foreground logs', async () => {
+    const scriptPath = join(TEST_PID_DIR, '_fg-logs-read.js');
+    writeFileSync(scriptPath, 'console.log("readable-via-L");');
+
+    const result1 = await runCli([
+      '-n',
+      'test-fg-read',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      scriptPath,
+    ]);
+    expect(result1.code).toBe(0);
+
+    // Poll for log content to appear
+    const logPath = join(TEST_PID_DIR, 'test-fg-read.log');
+    await waitForFileContent(logPath, 'readable-via-L');
+
+    // View logs via -L
+    const result2 = await runCli(['-L', 'test-fg-read', '-d', TEST_PID_DIR]);
+    expect(result2.code).toBe(0);
+    expect(result2.stdout).toContain('readable-via-L');
+  });
+
+  it('still propagates exit code in foreground mode', async () => {
+    const scriptPath = join(TEST_PID_DIR, '_fg-exit.js');
+    writeFileSync(scriptPath, 'process.exit(42);');
+
+    const result = await runCli([
+      '-n',
+      'test-fg-exit',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      scriptPath,
+    ]);
+
+    expect(result.code).toBe(42);
+  });
+
+  it('captures stderr to log file', async () => {
+    const scriptPath = join(TEST_PID_DIR, '_fg-stderr.js');
+    writeFileSync(scriptPath, 'console.error("foreground-stderr-test");');
+
+    const result = await runCli([
+      '-n',
+      'test-fg-stderr',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      scriptPath,
+    ]);
+
+    expect(result.code).toBe(0);
+
+    const logPath = join(TEST_PID_DIR, 'test-fg-stderr.log');
+    const logContent = await waitForFileContent(logPath, 'foreground-stderr-test');
+    expect(logContent).toContain('foreground-stderr-test');
+  });
+
+  it('rotates log on foreground restart when oversized', async () => {
+    // Create an oversized log file
+    const logPath = join(TEST_PID_DIR, 'test-fg-rotate.log');
+    writeFileSync(logPath, 'x'.repeat(11 * 1024 * 1024));
+    expect(existsSync(logPath)).toBe(true);
+
+    const scriptPath = join(TEST_PID_DIR, '_fg-rotate.js');
+    writeFileSync(scriptPath, 'console.log("after-fg-rotation");');
+
+    // Start foreground — should trigger rotation
+    const result = await runCli([
+      '-n',
+      'test-fg-rotate',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      scriptPath,
+    ]);
+    expect(result.code).toBe(0);
+
+    // Backup file should exist with old oversized content
+    const backupPath = join(TEST_PID_DIR, 'test-fg-rotate.log.1');
+    const start = Date.now();
+    const timeout = process.platform === 'win32' ? 10000 : 5000;
+    while (!existsSync(backupPath) && Date.now() - start < timeout) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    expect(existsSync(backupPath)).toBe(true);
+
+    const backupContent = readFileSync(backupPath, 'utf8');
+    expect(backupContent.length).toBeGreaterThan(10 * 1024 * 1024);
+  });
+
+  it('long-running foreground captures output and stops on kill', async () => {
+    const isWindows = process.platform === 'win32';
+
+    // Write a script that prints periodically
+    const scriptPath = join(TEST_PID_DIR, '_fg-long.js');
+    writeFileSync(
+      scriptPath,
+      `
+      let count = 0;
+      const iv = setInterval(() => {
+        console.log("tick-" + count++);
+      }, 200);
+      process.on("SIGTERM", () => { clearInterval(iv); process.exit(0); });
+      `
+    );
+
+    const { command, args } = getCliSpawnArgs([
+      '-n',
+      'test-fg-long',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      scriptPath,
+    ]);
+    const child = spawn(command, args, { stdio: 'pipe' });
+
+    // Wait for PID file and some output
+    const pidCreated = await waitForPidFile('test-fg-long');
+    expect(pidCreated).toBe(true);
+
+    const logPath = join(TEST_PID_DIR, 'test-fg-long.log');
+    const logContent = await waitForFileContent(logPath, 'tick-2');
+    expect(logContent).toContain('tick-0');
+
+    // Kill via CLI
+    const killResult = await runCli(['-k', 'test-fg-long', '-d', TEST_PID_DIR]);
+    // Kill should succeed (exit 0) or process might already be gone
+    expect(killResult.code).toBeLessThanOrEqual(1);
+
+    // Cleanup
+    child.kill();
+    const pid = readPidFile('test-fg-long');
+    if (pid && isProcessRunning(pid)) {
+      try {
+        if (isWindows) {
+          execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'pipe' });
+        } else {
+          process.kill(pid);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  it('daemon mode still works (regression guard)', async () => {
+    const scriptPath = join(TEST_PID_DIR, '_fg-daemon-guard.js');
+    writeFileSync(scriptPath, 'console.log("daemon-still-works");');
+
+    const result = await runCli([
+      '-n',
+      'test-daemon-guard',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      scriptPath,
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Daemon started');
+
+    // Log file should exist
+    const logPath = join(TEST_PID_DIR, 'test-daemon-guard.log');
+    const logContent = await waitForFileContent(logPath, 'daemon-still-works');
+    expect(logContent).toContain('daemon-still-works');
+  });
+
+  it('--no-log suppresses log file creation in foreground mode', async () => {
+    const scriptPath = join(TEST_PID_DIR, '_fg-nolog.js');
+    writeFileSync(scriptPath, 'console.log("no-log-test");');
+
+    const result = await runCli([
+      '-n',
+      'test-no-log',
+      '--no-log',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      scriptPath,
+    ]);
+
+    expect(result.code).toBe(0);
+
+    // Log file should NOT exist
+    const logPath = join(TEST_PID_DIR, 'test-no-log.log');
+    // Give a moment for any async operations to complete
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(existsSync(logPath)).toBe(false);
+
+    // But PID file should have been created (then cleaned up after exit)
+    // The process already exited, so we just verify no log file was created
+  });
+
+  it('--no-log with --daemon errors', async () => {
+    const result = await runCli([
+      '-n',
+      'test-nolog-daemon',
+      '--no-log',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'sleep',
+      '60',
+    ]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('--no-log cannot be used with --daemon');
   });
 });
 

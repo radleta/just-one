@@ -6,12 +6,15 @@ import {
   forceKillProcess,
   terminateProcess,
   spawnCommand,
+  spawnCommandDaemon,
   setupSignalHandlers,
   getProcessStartTime,
   isSameProcessInstance,
 } from './process.js';
-import { ChildProcess } from 'child_process';
+import { ChildProcess, spawn } from 'child_process';
 import { EventEmitter } from 'events';
+import { existsSync, readFileSync, mkdirSync, rmSync } from 'fs';
+import { join } from 'path';
 
 describe('Process operations', () => {
   describe('isProcessAlive', () => {
@@ -130,6 +133,162 @@ describe('Process operations', () => {
   });
 });
 
+describe('killProcess with real processes', () => {
+  let childPid: number | undefined;
+
+  afterEach(() => {
+    if (childPid) {
+      try {
+        process.kill(childPid, 'SIGKILL');
+      } catch {
+        /* already dead */
+      }
+      childPid = undefined;
+    }
+  });
+
+  it('kills a running process and returns true', async () => {
+    const child = spawn('sleep', ['60'], { detached: true });
+    child.unref();
+    childPid = child.pid!;
+    expect(isProcessAlive(childPid)).toBe(true);
+
+    const result = killProcess(childPid);
+    expect(result).toBe(true);
+
+    const died = await waitForProcessToDie(childPid, 2000);
+    expect(died).toBe(true);
+  });
+});
+
+describe('forceKillProcess with real processes', () => {
+  let childPid: number | undefined;
+
+  afterEach(() => {
+    if (childPid) {
+      try {
+        process.kill(childPid, 'SIGKILL');
+      } catch {
+        /* already dead */
+      }
+      childPid = undefined;
+    }
+  });
+
+  it('force kills a running process and returns true', async () => {
+    const child = spawn('sleep', ['60'], { detached: true });
+    child.unref();
+    childPid = child.pid!;
+    expect(isProcessAlive(childPid)).toBe(true);
+
+    const result = forceKillProcess(childPid);
+    expect(result).toBe(true);
+
+    const died = await waitForProcessToDie(childPid, 2000);
+    expect(died).toBe(true);
+  });
+});
+
+describe('terminateProcess with real processes', () => {
+  let childPid: number | undefined;
+
+  afterEach(() => {
+    if (childPid) {
+      try {
+        process.kill(childPid, 'SIGKILL');
+      } catch {
+        /* already dead */
+      }
+      childPid = undefined;
+    }
+  });
+
+  it('terminates a running process via SIGTERM', async () => {
+    const child = spawn('sleep', ['60'], { detached: true });
+    child.unref();
+    childPid = child.pid!;
+    expect(isProcessAlive(childPid)).toBe(true);
+
+    const result = await terminateProcess(childPid, 2000);
+    expect(result).toBe(true);
+    expect(isProcessAlive(childPid)).toBe(false);
+  });
+
+  it('escalates to SIGKILL when SIGTERM is ignored', async () => {
+    // Spawn a process that traps (ignores) SIGTERM
+    const child = spawn('bash', ['-c', "trap '' TERM; sleep 60"], { detached: true });
+    child.unref();
+    childPid = child.pid!;
+
+    // Brief wait for the trap to be set up
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(isProcessAlive(childPid)).toBe(true);
+
+    // Use a short grace period so it escalates to SIGKILL quickly
+    const result = await terminateProcess(childPid, 500);
+    expect(result).toBe(true);
+    expect(isProcessAlive(childPid)).toBe(false);
+  });
+});
+
+describe('spawnCommandDaemon', () => {
+  const DAEMON_TEST_DIR = join(__dirname, '../../.test-daemon-log');
+  let daemonPid: number | undefined;
+
+  beforeEach(() => {
+    if (existsSync(DAEMON_TEST_DIR)) {
+      rmSync(DAEMON_TEST_DIR, { recursive: true, force: true });
+    }
+    mkdirSync(DAEMON_TEST_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (daemonPid) {
+      try {
+        process.kill(daemonPid, 'SIGKILL');
+      } catch {
+        /* already dead */
+      }
+      daemonPid = undefined;
+    }
+    if (existsSync(DAEMON_TEST_DIR)) {
+      rmSync(DAEMON_TEST_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('spawns a daemon process and returns valid result', () => {
+    const logPath = join(DAEMON_TEST_DIR, 'daemon.log');
+    const result = spawnCommandDaemon('sleep', ['60'], logPath);
+    daemonPid = result.pid;
+
+    expect(result.child).toBeDefined();
+    expect(result.pid).toBeGreaterThan(0);
+    expect(typeof result.pid).toBe('number');
+  });
+
+  it('captures daemon output to log file', async () => {
+    const logPath = join(DAEMON_TEST_DIR, 'daemon-output.log');
+    const result = spawnCommandDaemon('node', ['-e', 'console.log("daemon-hello")'], logPath);
+    daemonPid = result.pid;
+
+    // Wait for daemon to run and write output
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    expect(existsSync(logPath)).toBe(true);
+    const content = readFileSync(logPath, 'utf8');
+    expect(content).toContain('daemon-hello');
+  });
+
+  it('creates a detached process that survives parent', () => {
+    const logPath = join(DAEMON_TEST_DIR, 'daemon-detached.log');
+    const result = spawnCommandDaemon('sleep', ['60'], logPath);
+    daemonPid = result.pid;
+
+    // Process should be alive and independent
+    expect(isProcessAlive(result.pid)).toBe(true);
+  });
+});
+
 describe('spawnCommand', () => {
   it('spawns a command and returns valid result', () => {
     // Spawn a simple command that exits quickly
@@ -158,6 +317,86 @@ describe('spawnCommand', () => {
     expect(result.child.pid).toBe(result.pid);
 
     result.child.kill();
+  });
+
+  describe('with log file', () => {
+    const LOG_TEST_DIR = join(__dirname, '../../.test-process-log');
+
+    beforeEach(() => {
+      if (existsSync(LOG_TEST_DIR)) {
+        rmSync(LOG_TEST_DIR, { recursive: true, force: true });
+      }
+      mkdirSync(LOG_TEST_DIR, { recursive: true });
+    });
+
+    afterEach(() => {
+      if (existsSync(LOG_TEST_DIR)) {
+        rmSync(LOG_TEST_DIR, { recursive: true, force: true });
+      }
+    });
+
+    it('captures stdout to log file', async () => {
+      const logPath = join(LOG_TEST_DIR, 'test.log');
+      const result = spawnCommand('node', ['-e', 'console.log("hello-log-test")'], logPath);
+
+      await new Promise<void>(resolve => {
+        result.child.on('exit', () => resolve());
+      });
+
+      // Give a brief moment for the stream to flush
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      expect(existsSync(logPath)).toBe(true);
+      const content = readFileSync(logPath, 'utf8');
+      expect(content).toContain('hello-log-test');
+    });
+
+    it('captures stderr to log file', async () => {
+      const logPath = join(LOG_TEST_DIR, 'test-stderr.log');
+      const result = spawnCommand('node', ['-e', 'console.error("stderr-log-test")'], logPath);
+
+      await new Promise<void>(resolve => {
+        result.child.on('exit', () => resolve());
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      expect(existsSync(logPath)).toBe(true);
+      const content = readFileSync(logPath, 'utf8');
+      expect(content).toContain('stderr-log-test');
+    });
+
+    it('provides piped streams when logFilePath is given', async () => {
+      const logPath = join(LOG_TEST_DIR, 'test-streams.log');
+      const isWindows = process.platform === 'win32';
+      const command = isWindows ? 'cmd' : 'sleep';
+      const args = isWindows ? ['/c', 'ping', '-n', '60', '127.0.0.1'] : ['60'];
+
+      const result = spawnCommand(command, args, logPath);
+
+      // With piped stdio, child should have readable stdout/stderr
+      expect(result.child.stdout).not.toBeNull();
+      expect(result.child.stderr).not.toBeNull();
+
+      result.child.kill();
+      // Wait for child to exit so the log stream closes before afterEach cleanup
+      await new Promise<void>(resolve => result.child.on('exit', () => resolve()));
+    });
+
+    it('does not provide piped streams when logFilePath is omitted', async () => {
+      const isWindows = process.platform === 'win32';
+      const command = isWindows ? 'cmd' : 'sleep';
+      const args = isWindows ? ['/c', 'ping', '-n', '60', '127.0.0.1'] : ['60'];
+
+      const result = spawnCommand(command, args);
+
+      // With inherited stdio, stdout/stderr are null
+      expect(result.child.stdout).toBeNull();
+      expect(result.child.stderr).toBeNull();
+
+      result.child.kill();
+      await new Promise<void>(resolve => result.child.on('exit', () => resolve()));
+    });
   });
 });
 
@@ -334,6 +573,54 @@ describe('setupSignalHandlers', () => {
 
         const sigtermHandler = registeredHandlers.get('SIGTERM')!;
         sigtermHandler();
+
+        expect(mockChild.kill).toHaveBeenCalledWith('SIGTERM');
+      });
+    }
+  });
+
+  describe('pipedStdio signal handling', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    if (process.platform === 'win32') {
+      it('calls child.kill(SIGTERM) on SIGINT when pipedStdio is true', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess, undefined, true);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        sigintHandler();
+
+        expect(mockChild.kill).toHaveBeenCalledWith('SIGTERM');
+      });
+
+      it('does not call child.kill on SIGINT when pipedStdio is false', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess, undefined, false);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        sigintHandler();
+
+        expect(mockChild.kill).not.toHaveBeenCalled();
+      });
+
+      it('still sets force-kill timer when pipedStdio is true', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess, undefined, true);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        sigintHandler();
+
+        expect(vi.getTimerCount()).toBe(1);
+      });
+    } else {
+      it('forwards SIGTERM to child on SIGINT regardless of pipedStdio', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess, undefined, true);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        sigintHandler();
 
         expect(mockChild.kill).toHaveBeenCalledWith('SIGTERM');
       });

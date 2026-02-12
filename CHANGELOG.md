@@ -2,7 +2,14 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
-## [Unreleased](https://github.com/radleta/just-one/compare/v1.3.0...HEAD)
+## [Unreleased](https://github.com/radleta/just-one/compare/v1.3.1...HEAD)
+
+### Features
+
+- **log:** capture stdout/stderr to log file in foreground mode (previously daemon-only), making `-L` and `-L -f` work for all processes
+- **cli:** add `--no-log` flag to disable log file capture in foreground mode
+
+## [1.3.1](https://github.com/radleta/just-one/compare/v1.3.0...v1.3.1) (2026-02-12)
 
 ### Bug Fixes
 

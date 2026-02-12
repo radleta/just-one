@@ -22,7 +22,8 @@ Existing solutions have drawbacks:
 
 - **Named process tracking** - Each process gets a unique name for precise targeting
 - **Automatic cleanup** - Previous instance killed before starting new one
-- **Daemon mode** - Run processes in the background with log file capture
+- **Log capture** - stdout/stderr captured to log file in both foreground and daemon modes
+- **Daemon mode** - Run processes in the background (detached)
 - **Log viewing** - View captured logs, follow in real-time (like `tail -f`)
 - **Log rotation** - Automatic rotation at 10MB (keeps 1 backup)
 - **Cross-platform** - Works on Windows, macOS, and Linux
@@ -64,19 +65,29 @@ just-one -n myapp -- node server.js
 just-one -n vite -e -- npm run dev
 ```
 
-### Daemon mode (background with log capture)
+### Log capture
+
+Output is automatically captured to `.just-one/<name>.log` in both foreground and daemon modes:
+
+```bash
+# Foreground — output appears in terminal AND is saved to log file
+just-one -n myapp -- npm start
+
+# Disable log capture if you don't need it
+just-one -n myapp --no-log -- npm start
+```
+
+### Daemon mode (background)
 
 ```bash
 # Run in background — parent exits immediately, output captured to log file
 just-one -n myapp -D -- npm start
-
-# Logs are written to .just-one/myapp.log
 ```
 
 ### Viewing logs
 
 ```bash
-# View all captured logs
+# View all captured logs (works for both foreground and daemon processes)
 just-one -L myapp
 
 # View last 50 lines
@@ -151,7 +162,8 @@ just-one -n storybook -d /tmp -- npx storybook dev
 | Option             | Alias | Description                                        |
 | ------------------ | ----- | -------------------------------------------------- |
 | `--name <name>`    | `-n`  | Required for run. Name to identify this process    |
-| `--daemon`         | `-D`  | Run in background with output captured to log file |
+| `--daemon`         | `-D`  | Run in background (detached)                       |
+| `--no-log`         |       | Disable log file capture in foreground mode        |
 | `--logs <name>`    | `-L`  | View captured logs for a named process             |
 | `--tail`           | `-f`  | Follow log output in real-time (use with `--logs`) |
 | `--lines <n>`      |       | Number of lines to show (use with `--logs`)        |
@@ -179,6 +191,7 @@ just-one -n storybook -d /tmp -- npx storybook dev
     "dev": "just-one -n vite -e -- vite",
     "dev:api": "just-one -n api -D -- node server.js",
     "dev:logs": "just-one -L api -f",
+    "dev:quick": "just-one -n quick --no-log -- node scripts/check.js",
     "stop": "just-one -K"
   }
 }
@@ -189,7 +202,7 @@ just-one -n storybook -d /tmp -- npx storybook dev
 ```
 .just-one/
   storybook.pid    # Contains: 12345
-  storybook.log    # Captured output (daemon mode only)
+  storybook.log    # Captured output (both foreground and daemon)
   storybook.log.1  # Rotated backup (auto-managed)
   vite.pid         # Contains: 67890
 ```
@@ -217,7 +230,7 @@ If these don't match within 5 seconds, the PID file is considered stale and the 
 | Windows  | `taskkill /PID <pid> /T /F` (kills process tree) | On Ctrl+C, relies on OS-delivered `CTRL_C_EVENT` for graceful shutdown with a force-kill safety net |
 | Unix/Mac | `kill -SIGTERM -<pid>` (process group)           | Forwards `SIGTERM` to child process                                                                 |
 
-**Windows graceful shutdown**: When the child shares the console (`stdio: 'inherit'`), Windows delivers `CTRL_C_EVENT` to all processes in the console group. `just-one` avoids calling `process.kill()` on the child (which uses `TerminateProcess` on Windows) to give the child time to run cleanup handlers. If the child doesn't exit within 2 seconds, it is force-killed as a safety net.
+**Windows graceful shutdown**: In foreground mode with log capture, stdout/stderr are piped so `CTRL_C_EVENT` may not reach the child automatically. `just-one` sends an explicit `SIGTERM` as a defensive fallback, with a force-kill safety net after 2 seconds. With `--no-log`, the child shares the console directly and receives `CTRL_C_EVENT` from the OS.
 
 ## Use Cases
 

@@ -3,7 +3,7 @@
  */
 
 import { spawn, execSync, ChildProcess, type StdioOptions } from 'child_process';
-import { openSync, closeSync } from 'fs';
+import { openSync, closeSync, createWriteStream } from 'fs';
 import pidusage from 'pidusage';
 
 const isWindows = process.platform === 'win32';
@@ -231,17 +231,35 @@ export interface SpawnResult {
 }
 
 /**
- * Spawn a command with stdio forwarding
+ * Spawn a command with stdio forwarding.
+ * When logFilePath is provided, stdout/stderr are piped and tee'd to both
+ * the terminal and the log file. When omitted, stdio is inherited directly.
  */
-export function spawnCommand(command: string, args: string[]): SpawnResult {
+export function spawnCommand(command: string, args: string[], logFilePath?: string): SpawnResult {
+  const stdio: StdioOptions = logFilePath ? ['inherit', 'pipe', 'pipe'] : 'inherit';
+
   const child = spawn(command, args, {
-    stdio: 'inherit',
+    stdio,
     shell: isWindows,
     detached: !isWindows,
   });
 
   if (child.pid === undefined) {
     throw new Error('Failed to spawn process');
+  }
+
+  if (logFilePath && child.stdout && child.stderr) {
+    const logStream = createWriteStream(logFilePath, { flags: 'a' });
+    logStream.on('error', () => {
+      // Log stream errors (ENOENT from directory removal, disk full, etc.)
+      // must not become unhandled exceptions. stdout/stderr are still piped
+      // to the terminal, so the process continues to work normally.
+    });
+    child.stdout.pipe(process.stdout);
+    child.stdout.pipe(logStream);
+    child.stderr.pipe(process.stderr);
+    child.stderr.pipe(logStream);
+    child.on('exit', () => logStream.end());
   }
 
   return {
@@ -296,14 +314,18 @@ const WINDOWS_GRACEFUL_TIMEOUT_MS = 2000;
  *
  * Unix: forwards SIGTERM to child for graceful shutdown.
  *
- * Windows: the child shares the console (stdio: 'inherit'), so when the user
- * presses Ctrl+C, Windows delivers CTRL_C_EVENT to the child directly — no
- * forwarding needed. We just set a force-kill timeout as a safety net in case
- * the child doesn't exit on its own. process.kill(pid, 'SIGINT') on Windows
- * calls TerminateProcess (not GenerateConsoleCtrlEvent), so we intentionally
- * avoid calling it to give the child time to handle the OS-delivered signal.
+ * Windows: when stdio is inherited, the child shares the console, so Ctrl+C
+ * delivers CTRL_C_EVENT to the child directly — no forwarding needed. When
+ * pipedStdio is true (stdout/stderr are piped for log capture), the child
+ * may not receive CTRL_C_EVENT automatically, so we explicitly call
+ * child.kill('SIGTERM') as a defensive fallback. The force-kill timeout
+ * remains as a safety net regardless.
  */
-export function setupSignalHandlers(child: ChildProcess, onExit?: () => void): void {
+export function setupSignalHandlers(
+  child: ChildProcess,
+  onExit?: () => void,
+  pipedStdio?: boolean
+): void {
   let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
 
   const forceKillWindows = () => {
@@ -321,11 +343,13 @@ export function setupSignalHandlers(child: ChildProcess, onExit?: () => void): v
   const handleSignal = (_signal: NodeJS.Signals) => {
     if (child.pid && isValidPid(child.pid)) {
       if (isWindows) {
-        // On Windows, the child already received CTRL_C_EVENT from the OS
-        // (since it shares our console via stdio: 'inherit').
-        // Don't call process.kill() — it uses TerminateProcess which would
-        // prevent the child from running its cleanup handlers.
-        // Just set a force-kill timeout as a safety net.
+        // With inherited stdio, the child gets CTRL_C_EVENT from the OS directly.
+        // With piped stdio (log capture), the child may not get the event, so we
+        // explicitly send SIGTERM as a defensive fallback. If the child already
+        // received the event, the kill is harmless (child is already shutting down).
+        if (pipedStdio) {
+          child.kill('SIGTERM');
+        }
         if (forceKillTimer === null) {
           forceKillTimer = setTimeout(forceKillWindows, WINDOWS_GRACEFUL_TIMEOUT_MS);
           forceKillTimer.unref();
