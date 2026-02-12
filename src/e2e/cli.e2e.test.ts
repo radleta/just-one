@@ -264,19 +264,17 @@ async function cleanTestDir(dir: string): Promise<void> {
 }
 
 describe('CLI E2E Tests', () => {
-  beforeEach(() => {
-    // Clean up test PID directory
-    if (existsSync(TEST_PID_DIR)) {
-      rmSync(TEST_PID_DIR, { recursive: true, force: true });
-    }
+  beforeEach(async () => {
+    // Kill any tracked processes before cleaning up
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
     mkdirSync(TEST_PID_DIR, { recursive: true });
   });
 
-  afterEach(() => {
-    // Clean up test PID directory
-    if (existsSync(TEST_PID_DIR)) {
-      rmSync(TEST_PID_DIR, { recursive: true, force: true });
-    }
+  afterEach(async () => {
+    // Kill any tracked processes before cleaning up
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
   });
 
   describe('Help and Version', () => {
@@ -361,8 +359,16 @@ describe('CLI E2E Tests', () => {
       expect(result.stdout).toContain('test-list');
       expect(result.stdout).toContain('running');
 
-      // Cleanup
-      child.kill();
+      // Cleanup - kill process tree on Windows, signal on Unix
+      try {
+        if (process.platform === 'win32' && child.pid) {
+          execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: 'pipe' });
+        } else {
+          child.kill();
+        }
+      } catch {
+        // Process may already be dead
+      }
     });
   });
 
