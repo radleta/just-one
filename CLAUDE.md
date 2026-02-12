@@ -226,6 +226,12 @@ npm run release:major    # Force major version bump
 - Unix: Negative PID kills process group
 - Both use SIGTERM for graceful shutdown (not SIGKILL)
 
+**IMPORTANT: Daemon mode spawn on Windows:**
+
+- **NEVER** use `shell: true` + `detached: true` with fd-based stdio — `cmd.exe` doesn't pass inherited file descriptors to grandchild processes (known Node.js issue). Log files will be created but stay empty.
+- Foreground mode (`spawnCommand`) can use `shell: true` because it uses `stdio: 'inherit'` (not fd-based) and `detached: false` on Windows.
+- `spawn()` with `shell: false` still finds executables in PATH via `CreateProcess` on Windows.
+
 ## PID Reuse Protection
 
 The tool verifies process identity before killing by comparing:
@@ -241,6 +247,10 @@ If these don't match within 5 seconds, the PID was likely reused by an unrelated
 - **Process not killed on Windows** - Ensure using `/T` flag to kill tree
 - **Orphaned PID file** - Normal behavior; next run will detect and handle
 - **E2E tests flaky on Windows** - Increase timeouts (Windows process ops are slower)
+- **Windows daemon tests: empty logs** - Caused by `shell: true` + `detached: true` with fd stdio (see Cross-Platform Notes)
+- **Windows file locking in test cleanup** - Kill tracked daemon processes before `rmSync`; use retry logic for directory removal
+- **Windows `cmd.exe` quoting** - Avoid `node -e 'console.log("...")'` in tests; write helper `.js` scripts to disk instead
+- **`fs.watchFile` unreliable on CI** - Use `setInterval` + `statSync` polling instead (libuv may skip poll intervals under load)
 
 ## Security Considerations
 
