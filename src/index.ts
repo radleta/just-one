@@ -8,12 +8,20 @@ import { parseArgs, validateOptions, getHelpText, type CliOptions } from './lib/
 import { readPid, writePid, deletePid, listPids, getPidFileMtime } from './lib/pid.js';
 import {
   isProcessAlive,
-  killProcess,
-  waitForProcessToDie,
+  terminateProcess,
   spawnCommand,
+  spawnCommandDaemon,
   setupSignalHandlers,
   isSameProcessInstance,
 } from './lib/process.js';
+import { existsSync } from 'fs';
+import {
+  getLogFilePath,
+  rotateLogIfNeeded,
+  readLogLines,
+  tailLogFile,
+  deleteLogFiles,
+} from './lib/log.js';
 
 // Read version from package.json at runtime
 const require = createRequire(import.meta.url);
@@ -53,10 +61,10 @@ async function handleKill(name: string, options: CliOptions): Promise<number> {
   }
 
   log(`Killing process ${name} (PID: ${pid})...`, options);
-  const killed = killProcess(pid);
+  const graceMs = options.grace !== undefined ? options.grace * 1000 : undefined;
+  const terminated = await terminateProcess(pid, graceMs);
 
-  if (killed) {
-    await waitForProcessToDie(pid);
+  if (terminated) {
     deletePid(name, options.pidDir);
     log(`Process ${name} killed`, options);
     return 0;
@@ -107,8 +115,11 @@ async function handleRun(options: CliOptions): Promise<number> {
         return 0;
       }
       log(`Killing existing process ${name} (PID: ${existingPid})...`, options);
-      killProcess(existingPid);
-      await waitForProcessToDie(existingPid);
+      const graceMs = options.grace !== undefined ? options.grace * 1000 : undefined;
+      const terminated = await terminateProcess(existingPid, graceMs);
+      if (!terminated) {
+        logError(`Warning: process ${existingPid} may still be running`);
+      }
     } else if (isProcessAlive(existingPid)) {
       // PID exists but doesn't match our process - likely PID reuse
       log(
@@ -123,6 +134,19 @@ async function handleRun(options: CliOptions): Promise<number> {
   log(`Starting: ${command} ${args.join(' ')}`, options);
 
   try {
+    if (options.daemon) {
+      // Daemon mode: run detached with log file capture
+      rotateLogIfNeeded(name, options.pidDir);
+      const logPath = getLogFilePath(name, options.pidDir);
+      const { pid } = spawnCommandDaemon(command, args, logPath);
+
+      writePid(name, pid, options.pidDir);
+      log(`Daemon started with PID: ${pid}`, options);
+      log(`Logs: ${logPath}`, options);
+      return 0;
+    }
+
+    // Foreground mode (existing behavior)
     const { child, pid } = spawnCommand(command, args);
 
     // Save PID
@@ -195,10 +219,10 @@ async function handleKillAll(options: CliOptions): Promise<number> {
     }
 
     log(`Killing process ${info.name} (PID: ${info.pid})...`, options);
-    const killed = killProcess(info.pid);
+    const graceMs = options.grace !== undefined ? options.grace * 1000 : undefined;
+    const terminated = await terminateProcess(info.pid, graceMs);
 
-    if (killed) {
-      await waitForProcessToDie(info.pid);
+    if (terminated) {
       deletePid(info.name, options.pidDir);
       log(`Process ${info.name} killed`, options);
     } else {
@@ -222,6 +246,7 @@ async function handleClean(options: CliOptions): Promise<number> {
   for (const info of pids) {
     if (!info.exists || info.pid <= 0) {
       deletePid(info.name, options.pidDir);
+      deleteLogFiles(info.name, options.pidDir);
       cleaned++;
       continue;
     }
@@ -233,6 +258,7 @@ async function handleClean(options: CliOptions): Promise<number> {
     if (!isSameInstance) {
       log(`Removing stale PID file: ${info.name} (PID: ${info.pid})`, options);
       deletePid(info.name, options.pidDir);
+      deleteLogFiles(info.name, options.pidDir);
       cleaned++;
     }
   }
@@ -299,6 +325,69 @@ async function handleWait(name: string, options: CliOptions): Promise<number> {
   return 0;
 }
 
+async function handleLogs(name: string, options: CliOptions): Promise<number> {
+  const logPath = getLogFilePath(name, options.pidDir);
+
+  if (!existsSync(logPath)) {
+    logError(`No logs found for process: ${name}`);
+    return 1;
+  }
+
+  if (!options.tail) {
+    // Static mode: print lines and exit
+    const lines = readLogLines(name, options.pidDir, options.lines);
+    for (const line of lines) {
+      console.log(line);
+    }
+    return 0;
+  }
+
+  // Follow mode: print initial lines, then tail
+  const initialLines = options.lines ?? 10;
+  const initial = readLogLines(name, options.pidDir, initialLines);
+  for (const line of initial) {
+    console.log(line);
+  }
+
+  const handle = tailLogFile(name, options.pidDir, {
+    onLine: line => console.log(line),
+    pollIntervalMs: 500,
+  });
+
+  // Poll PID to auto-stop when process dies
+  const pid = readPid(name, options.pidDir);
+  const pidPollInterval = setInterval(() => {
+    if (pid !== null && !isProcessAlive(pid)) {
+      handle.stop();
+      clearInterval(pidPollInterval);
+      log(`Process ${name} has exited`, options);
+      process.exit(0);
+    }
+    // Also stop if no PID file at all
+    const currentPid = readPid(name, options.pidDir);
+    if (currentPid === null) {
+      handle.stop();
+      clearInterval(pidPollInterval);
+      log(`Process ${name} is no longer tracked`, options);
+      process.exit(0);
+    }
+  }, 1000);
+
+  // Handle SIGINT/SIGTERM for clean exit
+  const cleanup = () => {
+    handle.stop();
+    clearInterval(pidPollInterval);
+    process.exit(0);
+  };
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
+
+  // Keep the process alive
+  return new Promise<number>(() => {
+    // Never resolves — exits via cleanup or process death detection
+  });
+}
+
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
 
@@ -350,6 +439,11 @@ async function main(): Promise<number> {
   // Handle status
   if (options.status) {
     return await handleStatus(options.status, options);
+  }
+
+  // Handle logs
+  if (options.logs) {
+    return await handleLogs(options.logs, options);
   }
 
   // Handle clean

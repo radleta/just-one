@@ -19,23 +19,27 @@
 
 **Source files** (`src/`):
 
-- `index.ts` - CLI entry point and main handler logic (handleRun, handleKill, handleList, handleStatus, handleKillAll, handleClean, handlePid, handleWait)
+- `index.ts` - CLI entry point and main handler logic (handleRun, handleKill, handleList, handleStatus, handleKillAll, handleClean, handlePid, handleWait, handleLogs)
 - `lib/cli.ts` - Command-line argument parsing and validation
 - `lib/process.ts` - Process spawn/kill/management logic (CRITICAL - see safety section)
 - `lib/pid.ts` - PID file read/write/delete/list operations
+- `lib/log.ts` - Log file operations for daemon mode (read, write, rotate, tail)
 
 **Test files:**
 
-- `lib/cli.test.ts` - Unit tests for CLI parsing (~390 lines)
-- `lib/pid.test.ts` - Unit tests for PID operations (~215 lines)
-- `lib/process.test.ts` - Unit tests for process management (~210 lines)
-- `e2e/cli.e2e.test.ts` - End-to-end integration tests (~485 lines)
+- `lib/cli.test.ts` - Unit tests for CLI parsing
+- `lib/pid.test.ts` - Unit tests for PID operations
+- `lib/process.test.ts` - Unit tests for process management
+- `lib/log.test.ts` - Unit tests for log file operations
+- `e2e/cli.e2e.test.ts` - End-to-end integration tests
 
 **Key patterns:**
 
 - **Pure function extraction** - Business logic in `lib/*.ts` (testable without mocking)
 - **Cross-platform** - Windows uses `taskkill`, Unix uses `process.kill()`
 - **PID validation** - All PIDs validated before shell interpolation
+- **Daemon mode** - Detached process with `stdio: ['ignore', logFd, logFd]` for log capture
+- **Log rotation** - Automatic at spawn time when >10MB (keeps 1 backup as `.log.1`)
 
 **Build output:**
 
@@ -90,7 +94,9 @@ Running `taskkill /IM node.exe /F` will kill EVERY node process on the machine, 
 
 The safe implementation is in `src/lib/process.ts`:
 
-- `killProcess(pid)` - Only kills specific PID
+- `terminateProcess(pid, graceMs?)` - SIGTERM → wait grace period → SIGKILL escalation (preferred)
+- `killProcess(pid)` - Sends SIGTERM to specific PID only
+- `forceKillProcess(pid)` - Sends SIGKILL to specific PID (last resort)
 - `isProcessAlive(pid)` - Checks if specific PID is running
 - `isValidPid(pid)` - Validates PID range 1-4194304
 - `getProcessStartTime(pid)` - Gets process start time via pidusage
@@ -206,7 +212,7 @@ npm run release:major    # Force major version bump
 - **Package:** `just-one`
 - **Author:** Richard Adleta
 - **License:** MIT
-- **Engines:** Node 18+
+- **Engines:** Node 20+
 - **Dependencies:** [pidusage](https://github.com/soyuka/pidusage) (cross-platform process metrics for PID verification)
 
 ## Cross-Platform Notes
@@ -219,6 +225,12 @@ npm run release:major    # Force major version bump
 - Windows: `/T` flag kills process tree (children)
 - Unix: Negative PID kills process group
 - Both use SIGTERM for graceful shutdown (not SIGKILL)
+
+**IMPORTANT: Daemon mode spawn on Windows:**
+
+- **NEVER** use `shell: true` + `detached: true` with fd-based stdio — `cmd.exe` doesn't pass inherited file descriptors to grandchild processes (known Node.js issue). Log files will be created but stay empty.
+- Foreground mode (`spawnCommand`) can use `shell: true` because it uses `stdio: 'inherit'` (not fd-based) and `detached: false` on Windows.
+- `spawn()` with `shell: false` still finds executables in PATH via `CreateProcess` on Windows.
 
 ## PID Reuse Protection
 
@@ -235,6 +247,10 @@ If these don't match within 5 seconds, the PID was likely reused by an unrelated
 - **Process not killed on Windows** - Ensure using `/T` flag to kill tree
 - **Orphaned PID file** - Normal behavior; next run will detect and handle
 - **E2E tests flaky on Windows** - Increase timeouts (Windows process ops are slower)
+- **Windows daemon tests: empty logs** - Caused by `shell: true` + `detached: true` with fd stdio (see Cross-Platform Notes)
+- **Windows file locking in test cleanup** - Kill tracked daemon processes before `rmSync`; use retry logic for directory removal
+- **Windows `cmd.exe` quoting** - Avoid `node -e 'console.log("...")'` in tests; write helper `.js` scripts to disk instead
+- **`fs.watchFile` unreliable on CI** - Use `setInterval` + `statSync` polling instead (libuv may skip poll intervals under load)
 
 ## Security Considerations
 

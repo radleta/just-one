@@ -404,6 +404,200 @@ describe('parseArgs', () => {
     });
   });
 
+  describe('grace option', () => {
+    it('parses --grace with numeric value', () => {
+      const result = parseArgs(['-n', 'myapp', '--grace', '10', '--', 'sleep', '60']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.grace).toBe(10);
+      }
+    });
+
+    it('parses -g with numeric value', () => {
+      const result = parseArgs(['-n', 'myapp', '-g', '3', '--', 'sleep', '60']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.grace).toBe(3);
+      }
+    });
+
+    it('accepts decimal values', () => {
+      const result = parseArgs(['-n', 'myapp', '--grace', '2.5', '--', 'sleep', '60']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.grace).toBe(2.5);
+      }
+    });
+
+    it('returns error when --grace has no value', () => {
+      const result = parseArgs(['--grace']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--grace requires a positive number');
+      }
+    });
+
+    it('returns error when --grace value is not a number', () => {
+      const result = parseArgs(['-n', 'myapp', '--grace', 'abc']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--grace requires a positive number');
+      }
+    });
+
+    it('returns error when --grace value is zero', () => {
+      const result = parseArgs(['-n', 'myapp', '--grace', '0']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--grace requires a positive number');
+      }
+    });
+
+    it('returns error when --grace value starts with dash', () => {
+      const result = parseArgs(['--grace', '-5']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--grace requires a positive number');
+      }
+    });
+
+    it('defaults grace to undefined', () => {
+      const result = parseArgs(['-n', 'myapp', '--', 'sleep', '60']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.grace).toBeUndefined();
+      }
+    });
+  });
+
+  describe('daemon flag', () => {
+    it('parses --daemon flag', () => {
+      const result = parseArgs(['-n', 'myapp', '--daemon', '--', 'node', 'server.js']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.daemon).toBe(true);
+      }
+    });
+
+    it('parses -D flag', () => {
+      const result = parseArgs(['-n', 'myapp', '-D', '--', 'node', 'server.js']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.daemon).toBe(true);
+      }
+    });
+  });
+
+  describe('logs option', () => {
+    it('parses --logs with value', () => {
+      const result = parseArgs(['--logs', 'myapp']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.logs).toBe('myapp');
+      }
+    });
+
+    it('parses -L with value', () => {
+      const result = parseArgs(['-L', 'myapp']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.logs).toBe('myapp');
+      }
+    });
+
+    it('returns error when --logs has no value', () => {
+      const result = parseArgs(['--logs']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--logs requires a value');
+      }
+    });
+
+    it('returns error when --logs value starts with dash', () => {
+      const result = parseArgs(['--logs', '--list']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--logs requires a value');
+      }
+    });
+
+    it('rejects logs names with path traversal', () => {
+      const result = parseArgs(['-L', '../etc/passwd']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('Invalid name');
+      }
+    });
+  });
+
+  describe('tail flag', () => {
+    it('parses --tail flag', () => {
+      const result = parseArgs(['-L', 'myapp', '--tail']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.tail).toBe(true);
+      }
+    });
+
+    it('parses -f flag', () => {
+      const result = parseArgs(['-L', 'myapp', '-f']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.tail).toBe(true);
+      }
+    });
+  });
+
+  describe('lines option', () => {
+    it('parses --lines with positive integer', () => {
+      const result = parseArgs(['-L', 'myapp', '--lines', '50']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.lines).toBe(50);
+      }
+    });
+
+    it('returns error when --lines has no value', () => {
+      const result = parseArgs(['--lines']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--lines requires a positive integer');
+      }
+    });
+
+    it('returns error when --lines is not a number', () => {
+      const result = parseArgs(['-L', 'myapp', '--lines', 'abc']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--lines requires a positive integer');
+      }
+    });
+
+    it('returns error when --lines is zero', () => {
+      const result = parseArgs(['-L', 'myapp', '--lines', '0']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--lines requires a positive integer');
+      }
+    });
+
+    it('returns error when --lines is a decimal', () => {
+      const result = parseArgs(['-L', 'myapp', '--lines', '2.5']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--lines requires a positive integer');
+      }
+    });
+
+    it('returns error when --lines value starts with dash', () => {
+      const result = parseArgs(['--lines', '-5']);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('--lines requires a positive integer');
+      }
+    });
+  });
+
   describe('command parsing', () => {
     it('parses command after --', () => {
       const result = parseArgs(['-n', 'myapp', '--', 'node', 'server.js', '--port', '3000']);
@@ -453,6 +647,11 @@ describe('validateOptions', () => {
     pid: undefined,
     wait: undefined,
     timeout: undefined,
+    grace: undefined,
+    daemon: false,
+    logs: undefined,
+    tail: false,
+    lines: undefined,
     pidDir: '.just-one',
     quiet: false,
     help: false,
@@ -552,6 +751,52 @@ describe('validateOptions', () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it('allows logs as standalone operation', () => {
+    const result = validateOptions({ ...baseOptions, logs: 'myapp' });
+    expect(result.success).toBe(true);
+  });
+
+  it('allows logs with tail', () => {
+    const result = validateOptions({ ...baseOptions, logs: 'myapp', tail: true });
+    expect(result.success).toBe(true);
+  });
+
+  it('allows logs with lines', () => {
+    const result = validateOptions({ ...baseOptions, logs: 'myapp', lines: 50 });
+    expect(result.success).toBe(true);
+  });
+
+  it('allows logs with tail and lines', () => {
+    const result = validateOptions({ ...baseOptions, logs: 'myapp', tail: true, lines: 20 });
+    expect(result.success).toBe(true);
+  });
+
+  it('errors when tail is used without logs', () => {
+    const result = validateOptions({ ...baseOptions, tail: true });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain('--tail can only be used with --logs');
+    }
+  });
+
+  it('errors when lines is used without logs', () => {
+    const result = validateOptions({ ...baseOptions, lines: 50 });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain('--lines can only be used with --logs');
+    }
+  });
+
+  it('allows daemon with name and command', () => {
+    const result = validateOptions({
+      ...baseOptions,
+      daemon: true,
+      name: 'myapp',
+      command: ['node', 'server.js'],
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('getHelpText', () => {
@@ -577,6 +822,11 @@ describe('getHelpText', () => {
     expect(help).toContain('--pid');
     expect(help).toContain('--wait');
     expect(help).toContain('--timeout');
+    expect(help).toContain('--grace');
+    expect(help).toContain('--daemon');
+    expect(help).toContain('--logs');
+    expect(help).toContain('--tail');
+    expect(help).toContain('--lines');
   });
 });
 

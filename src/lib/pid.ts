@@ -2,7 +2,15 @@
  * PID file operations for just-one
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
+import {
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+} from 'fs';
 import { join, dirname } from 'path';
 
 export interface PidInfo {

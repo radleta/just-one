@@ -3,6 +3,8 @@ import {
   isProcessAlive,
   killProcess,
   waitForProcessToDie,
+  forceKillProcess,
+  terminateProcess,
   spawnCommand,
   setupSignalHandlers,
   getProcessStartTime,
@@ -75,6 +77,55 @@ describe('Process operations', () => {
       expect(result).toBe(false);
       // Should have waited at least the timeout duration
       expect(elapsed).toBeGreaterThanOrEqual(timeoutMs - 50); // Allow 50ms tolerance
+    });
+  });
+  describe('forceKillProcess', () => {
+    it('returns false for non-existent PID', () => {
+      const result = forceKillProcess(999999999);
+      expect(result).toBe(false);
+    });
+
+    it('returns false for negative PID', () => {
+      const result = forceKillProcess(-1);
+      expect(result).toBe(false);
+    });
+
+    it('returns false for PID 0', () => {
+      const result = forceKillProcess(0);
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('terminateProcess', () => {
+    it('returns true for non-existent process (already dead)', async () => {
+      // Use a valid PID that doesn't exist (within isValidPid range)
+      const result = await terminateProcess(4194000);
+      expect(result).toBe(true);
+    });
+
+    it('returns false for invalid PID', async () => {
+      const result = await terminateProcess(-1);
+      expect(result).toBe(false);
+    });
+
+    it('returns false for PID 0', async () => {
+      const result = await terminateProcess(0);
+      expect(result).toBe(false);
+    });
+
+    it('returns false for out-of-range PID', async () => {
+      const result = await terminateProcess(999999999);
+      expect(result).toBe(false);
+    });
+
+    it('accepts custom grace period', async () => {
+      const result = await terminateProcess(4194000, 100);
+      expect(result).toBe(true);
+    });
+
+    it('uses default grace period when not specified', async () => {
+      const result = await terminateProcess(4194000);
+      expect(result).toBe(true);
     });
   });
 });

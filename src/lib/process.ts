@@ -2,13 +2,15 @@
  * Cross-platform process handling for just-one
  */
 
-import { spawn, execSync, ChildProcess } from 'child_process';
+import { spawn, execSync, ChildProcess, type StdioOptions } from 'child_process';
+import { openSync, closeSync } from 'fs';
 import pidusage from 'pidusage';
 
 const isWindows = process.platform === 'win32';
 
-// Constants for process polling
-const DEFAULT_WAIT_TIMEOUT_MS = 2000;
+// Constants for process termination
+const DEFAULT_GRACE_PERIOD_MS = 5000; // How long to wait after SIGTERM before escalating
+const FORCE_KILL_WAIT_MS = 2000; // How long to wait after SIGKILL for process to die
 const CHECK_INTERVAL_MS = 100;
 
 /**
@@ -132,11 +134,11 @@ function tryKillUnix(pid: number): boolean {
 /**
  * Wait for a process to die, with timeout
  * @param pid - Process ID to wait for
- * @param timeoutMs - Maximum time to wait (default: 2000ms)
+ * @param timeoutMs - Maximum time to wait (default: 5000ms)
  */
 export async function waitForProcessToDie(
   pid: number,
-  timeoutMs: number = DEFAULT_WAIT_TIMEOUT_MS
+  timeoutMs: number = DEFAULT_GRACE_PERIOD_MS
 ): Promise<boolean> {
   const startTime = Date.now();
 
@@ -150,6 +152,79 @@ export async function waitForProcessToDie(
   return !isProcessAlive(pid);
 }
 
+/**
+ * Force kill a process by PID using SIGKILL (Unix) or taskkill /F (Windows).
+ * This is a last resort after SIGTERM fails.
+ */
+export function forceKillProcess(pid: number): boolean {
+  if (!isValidPid(pid) || !isProcessAlive(pid)) {
+    return false;
+  }
+
+  try {
+    if (isWindows) {
+      // PID is validated as a safe integer above before interpolation
+      execSync(`taskkill /PID ${pid} /T /F`, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } else {
+      // Try process group first, then individual PID
+      let killed = false;
+      try {
+        process.kill(-pid, 'SIGKILL');
+        killed = true;
+      } catch {
+        /* group kill may fail */
+      }
+      try {
+        process.kill(pid, 'SIGKILL');
+        killed = true;
+      } catch {
+        /* individual kill may fail */
+      }
+      if (!killed) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Terminate a process with graceful shutdown and SIGKILL escalation.
+ *
+ * Flow: SIGTERM → wait grace period → SIGKILL → wait 2s → give up
+ *
+ * @param pid - Process ID to terminate
+ * @param gracePeriodMs - How long to wait after SIGTERM before escalating (default: 5000ms)
+ * @returns true if process is dead, false if it could not be killed
+ */
+export async function terminateProcess(pid: number, gracePeriodMs?: number): Promise<boolean> {
+  const grace = gracePeriodMs ?? DEFAULT_GRACE_PERIOD_MS;
+
+  if (!isValidPid(pid)) {
+    return false;
+  }
+
+  // Already dead? Nothing to do.
+  if (!isProcessAlive(pid)) {
+    return true;
+  }
+
+  // Step 1: Send SIGTERM (or taskkill /F on Windows)
+  killProcess(pid);
+
+  // Step 2: Wait for graceful shutdown
+  const died = await waitForProcessToDie(pid, grace);
+  if (died) {
+    return true;
+  }
+
+  // Step 3: Escalate to SIGKILL (Unix) / re-attempt taskkill (Windows)
+  forceKillProcess(pid);
+  return await waitForProcessToDie(pid, FORCE_KILL_WAIT_MS);
+}
+
 export interface SpawnResult {
   child: ChildProcess;
   pid: number;
@@ -159,12 +234,7 @@ export interface SpawnResult {
  * Spawn a command with stdio forwarding
  */
 export function spawnCommand(command: string, args: string[]): SpawnResult {
-  // On Windows, pass entire command as a single string to avoid escaping issues
-  // with shell: true (DEP0190 warning and argument handling)
-  const spawnCmd = isWindows ? `${command} ${args.join(' ')}` : command;
-  const spawnArgs = isWindows ? [] : args;
-
-  const child = spawn(spawnCmd, spawnArgs, {
+  const child = spawn(command, args, {
     stdio: 'inherit',
     shell: isWindows,
     detached: !isWindows,
@@ -178,6 +248,44 @@ export function spawnCommand(command: string, args: string[]): SpawnResult {
     child,
     pid: child.pid,
   };
+}
+
+/**
+ * Spawn a command in daemon mode (detached, with output captured to log file).
+ * The parent process does not wait for the child — it calls child.unref().
+ */
+export function spawnCommandDaemon(
+  command: string,
+  args: string[],
+  logFilePath: string
+): SpawnResult {
+  const logFd = openSync(logFilePath, 'a');
+
+  try {
+    const stdio: StdioOptions = ['ignore', logFd, logFd];
+
+    const child = spawn(command, args, {
+      stdio,
+      // Don't use shell on Windows for daemon mode. With shell: true, Node spawns
+      // cmd.exe which doesn't reliably pass fd-based stdio to grandchild processes
+      // when combined with detached: true (known Node.js issue on Windows).
+      // CreateProcess still searches PATH, so executables are found without a shell.
+      detached: true,
+    });
+
+    if (child.pid === undefined) {
+      throw new Error('Failed to spawn daemon process');
+    }
+
+    child.unref();
+
+    return {
+      child,
+      pid: child.pid,
+    };
+  } finally {
+    closeSync(logFd);
+  }
 }
 
 // Grace period for Windows child process to exit before force-killing
