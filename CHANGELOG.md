@@ -2,12 +2,17 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
-## [Unreleased](https://github.com/radleta/just-one/compare/v1.3.1...HEAD)
+## [1.4.0](https://github.com/radleta/just-one/compare/v1.3.1...v1.4.0) (2026-02-12)
 
 ### Features
 
-- **log:** capture stdout/stderr to log file in foreground mode (previously daemon-only), making `-L` and `-L -f` work for all processes
-- **cli:** add `--no-log` flag to disable log file capture in foreground mode
+- **log:** capture stdout/stderr to log file in foreground mode ([f587b40](https://github.com/radleta/just-one/commit/f587b4073c3d419649cb0e01c3e08f11abb34ba3))
+
+### Bug Fixes
+
+- handle log stream errors and improve process.ts test coverage ([a40fcc9](https://github.com/radleta/just-one/commit/a40fcc9c2433bdadba4efd660b29e0833dbc2c78))
+- **test:** stabilize flaky "kills a running process" e2e test ([2cc9067](https://github.com/radleta/just-one/commit/2cc9067f2563d323abf8fb404f643f72584b4713))
+- **test:** use Windows-safe cleanup in global e2e beforeEach/afterEach ([09d5a00](https://github.com/radleta/just-one/commit/09d5a001b42cba5be329050d8f79d428358718cc))
 
 ## [1.3.1](https://github.com/radleta/just-one/compare/v1.3.0...v1.3.1) (2026-02-12)
 
