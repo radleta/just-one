@@ -8,6 +8,7 @@ import {
   renameSync,
   unlinkSync,
   readFileSync,
+  readdirSync,
   openSync,
   readSync,
   closeSync,
@@ -209,6 +210,34 @@ export function tailLogFile(name: string, pidDir: string, options: TailOptions):
       clearInterval(intervalId);
     },
   };
+}
+
+/**
+ * List names that have log files (.log or .log.1) but no corresponding .pid file.
+ * Returns deduplicated list of names.
+ */
+export function listOrphanedLogNames(pidDir: string): string[] {
+  if (!existsSync(pidDir)) {
+    return [];
+  }
+
+  try {
+    const files = readdirSync(pidDir);
+    const pidNames = new Set(files.filter(f => f.endsWith('.pid')).map(f => f.slice(0, -4)));
+
+    const logNames = new Set<string>();
+    for (const f of files) {
+      if (f.endsWith('.log.1')) {
+        logNames.add(f.slice(0, -6));
+      } else if (f.endsWith('.log')) {
+        logNames.add(f.slice(0, -4));
+      }
+    }
+
+    return [...logNames].filter(name => !pidNames.has(name));
+  } catch {
+    return [];
+  }
 }
 
 /**

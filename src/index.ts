@@ -14,13 +14,14 @@ import {
   setupSignalHandlers,
   isSameProcessInstance,
 } from './lib/process.js';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import {
   getLogFilePath,
   rotateLogIfNeeded,
   readLogLines,
   tailLogFile,
   deleteLogFiles,
+  listOrphanedLogNames,
 } from './lib/log.js';
 
 // Read version from package.json at runtime
@@ -136,6 +137,10 @@ async function handleRun(options: CliOptions): Promise<number> {
   try {
     if (options.daemon) {
       // Daemon mode: run detached with log file capture
+      // Ensure PID directory exists before opening log file
+      if (!existsSync(options.pidDir)) {
+        mkdirSync(options.pidDir, { recursive: true });
+      }
       rotateLogIfNeeded(name, options.pidDir);
       const logPath = getLogFilePath(name, options.pidDir);
       const { pid } = spawnCommandDaemon(command, args, logPath);
@@ -237,17 +242,12 @@ async function handleKillAll(options: CliOptions): Promise<number> {
 async function handleClean(options: CliOptions): Promise<number> {
   const pids = listPids(options.pidDir);
 
-  if (pids.length === 0) {
-    log('No PID files to clean', options);
-    return 0;
-  }
-
-  let cleaned = 0;
+  let cleanedPids = 0;
   for (const info of pids) {
     if (!info.exists || info.pid <= 0) {
       deletePid(info.name, options.pidDir);
       deleteLogFiles(info.name, options.pidDir);
-      cleaned++;
+      cleanedPids++;
       continue;
     }
 
@@ -259,14 +259,29 @@ async function handleClean(options: CliOptions): Promise<number> {
       log(`Removing stale PID file: ${info.name} (PID: ${info.pid})`, options);
       deletePid(info.name, options.pidDir);
       deleteLogFiles(info.name, options.pidDir);
-      cleaned++;
+      cleanedPids++;
     }
   }
 
-  if (cleaned === 0) {
-    log('No stale PID files found', options);
+  // Clean orphaned log files (logs with no corresponding PID file)
+  const orphanedLogs = listOrphanedLogNames(options.pidDir);
+  for (const name of orphanedLogs) {
+    log(`Removing orphaned log file: ${name}`, options);
+    deleteLogFiles(name, options.pidDir);
+  }
+
+  const totalCleaned = cleanedPids + orphanedLogs.length;
+  if (totalCleaned === 0) {
+    log('No stale files found', options);
   } else {
-    log(`Cleaned ${cleaned} stale PID file${cleaned === 1 ? '' : 's'}`, options);
+    const parts: string[] = [];
+    if (cleanedPids > 0) {
+      parts.push(`${cleanedPids} stale PID file${cleanedPids === 1 ? '' : 's'}`);
+    }
+    if (orphanedLogs.length > 0) {
+      parts.push(`${orphanedLogs.length} orphaned log file${orphanedLogs.length === 1 ? '' : 's'}`);
+    }
+    log(`Cleaned ${parts.join(' and ')}`, options);
   }
 
   return 0;
@@ -284,7 +299,8 @@ async function handlePid(name: string, options: CliOptions): Promise<number> {
   const isSameInstance = pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime));
 
   if (isSameInstance) {
-    log(String(pid), options);
+    // Always print PID to stdout, even in quiet mode — this is the command's purpose
+    console.log(String(pid));
     return 0;
   }
 

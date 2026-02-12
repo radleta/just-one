@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [Unreleased](https://github.com/radleta/just-one/compare/v1.3.0...HEAD)
+
+### Bug Fixes
+
+- **cli:** print PID to stdout even in quiet mode so `pid=$(just-one -p name -q)` works ([#6](https://github.com/radleta/just-one/issues/6))
+- **clean:** detect and remove orphaned log files that have no matching PID file ([#7](https://github.com/radleta/just-one/issues/7))
+- **daemon:** auto-create PID directory before opening log file in daemon mode ([#8](https://github.com/radleta/just-one/issues/8))
+
 ## [1.3.0](https://github.com/radleta/just-one/compare/v1.2.0...v1.3.0) (2026-02-12)
 
 ### Features

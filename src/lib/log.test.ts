@@ -9,6 +9,7 @@ import {
   readLogLines,
   tailLogFile,
   deleteLogFiles,
+  listOrphanedLogNames,
 } from './log.js';
 
 const TEST_DIR = '.test-just-one-log';
@@ -305,6 +306,57 @@ describe('Log operations', () => {
     it('handles both files missing', () => {
       // Should not throw
       deleteLogFiles('nonexistent', TEST_DIR);
+    });
+  });
+
+  describe('listOrphanedLogNames', () => {
+    it('returns empty array when directory does not exist', () => {
+      const names = listOrphanedLogNames('/nonexistent-dir');
+      expect(names).toEqual([]);
+    });
+
+    it('returns empty array when no log files exist', () => {
+      const names = listOrphanedLogNames(TEST_DIR);
+      expect(names).toEqual([]);
+    });
+
+    it('returns empty array when all logs have matching PID files', () => {
+      writeFileSync(join(TEST_DIR, 'myapp.pid'), '12345');
+      writeFileSync(join(TEST_DIR, 'myapp.log'), 'some logs');
+
+      const names = listOrphanedLogNames(TEST_DIR);
+      expect(names).toEqual([]);
+    });
+
+    it('returns names for log files without matching PID files', () => {
+      writeFileSync(join(TEST_DIR, 'orphaned.log'), 'orphaned logs');
+
+      const names = listOrphanedLogNames(TEST_DIR);
+      expect(names).toEqual(['orphaned']);
+    });
+
+    it('returns names for backup log files without matching PID files', () => {
+      writeFileSync(join(TEST_DIR, 'orphaned.log.1'), 'orphaned backup');
+
+      const names = listOrphanedLogNames(TEST_DIR);
+      expect(names).toEqual(['orphaned']);
+    });
+
+    it('deduplicates when both .log and .log.1 exist without PID', () => {
+      writeFileSync(join(TEST_DIR, 'orphaned.log'), 'logs');
+      writeFileSync(join(TEST_DIR, 'orphaned.log.1'), 'backup');
+
+      const names = listOrphanedLogNames(TEST_DIR);
+      expect(names).toEqual(['orphaned']);
+    });
+
+    it('returns only orphaned names, not ones with PID files', () => {
+      writeFileSync(join(TEST_DIR, 'active.pid'), '12345');
+      writeFileSync(join(TEST_DIR, 'active.log'), 'active logs');
+      writeFileSync(join(TEST_DIR, 'orphaned.log'), 'orphaned logs');
+
+      const names = listOrphanedLogNames(TEST_DIR);
+      expect(names).toEqual(['orphaned']);
     });
   });
 });

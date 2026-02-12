@@ -1193,4 +1193,97 @@ describe('Clean Command with Log Files', () => {
     expect(existsSync(join(TEST_PID_DIR, 'stale-app.log'))).toBe(false);
     expect(existsSync(join(TEST_PID_DIR, 'stale-app.log.1'))).toBe(false);
   });
+
+  it('removes orphaned log files with no matching PID file', async () => {
+    // Create orphaned log files (no .pid file exists)
+    writeFileSync(join(TEST_PID_DIR, 'orphaned-app.log'), 'orphaned logs');
+    writeFileSync(join(TEST_PID_DIR, 'orphaned-app.log.1'), 'orphaned backup');
+
+    const result = await runCli(['--clean', '-d', TEST_PID_DIR]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('orphaned');
+
+    // Orphaned log files should be removed
+    expect(existsSync(join(TEST_PID_DIR, 'orphaned-app.log'))).toBe(false);
+    expect(existsSync(join(TEST_PID_DIR, 'orphaned-app.log.1'))).toBe(false);
+  });
+});
+
+describe('PID Command with Quiet Mode', () => {
+  beforeEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+    mkdirSync(TEST_PID_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    if (process.platform === 'win32') {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    await cleanTestDir(TEST_PID_DIR);
+  });
+
+  it('prints PID even in quiet mode', async () => {
+    const isWindows = process.platform === 'win32';
+    const sleepCmd = isWindows ? 'ping' : 'sleep';
+    const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
+
+    // Start a daemon
+    await runCli(['-n', 'test-pid-quiet', '-D', '-d', TEST_PID_DIR, '--', sleepCmd, ...sleepArgs]);
+
+    const expectedPid = readPidFile('test-pid-quiet');
+    expect(expectedPid).not.toBeNull();
+
+    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+
+    // Get PID with quiet mode - should still output the PID
+    const result = await runCli(['-p', 'test-pid-quiet', '-q', '-d', TEST_PID_DIR]);
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe(String(expectedPid));
+  });
+});
+
+describe('Daemon Mode with Auto-Created Directory', () => {
+  const CUSTOM_DIR = join(__dirname, '../../.test-pids-autocreate');
+
+  beforeEach(async () => {
+    await cleanTestDir(CUSTOM_DIR);
+  });
+
+  afterEach(async () => {
+    killTrackedProcesses(CUSTOM_DIR);
+    if (process.platform === 'win32') {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    await cleanTestDir(CUSTOM_DIR);
+  });
+
+  it('auto-creates PID directory for daemon mode', async () => {
+    const isWindows = process.platform === 'win32';
+    const sleepCmd = isWindows ? 'ping' : 'sleep';
+    const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
+
+    // Directory should not exist yet
+    expect(existsSync(CUSTOM_DIR)).toBe(false);
+
+    const result = await runCli([
+      '-n',
+      'test-autocreate',
+      '-D',
+      '-d',
+      CUSTOM_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Daemon started');
+
+    // Directory and files should now exist
+    expect(existsSync(CUSTOM_DIR)).toBe(true);
+    expect(existsSync(join(CUSTOM_DIR, 'test-autocreate.pid'))).toBe(true);
+    expect(existsSync(join(CUSTOM_DIR, 'test-autocreate.log'))).toBe(true);
+  });
 });
