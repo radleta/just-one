@@ -266,7 +266,10 @@ export function spawnCommandDaemon(
 
     const child = spawn(command, args, {
       stdio,
-      shell: isWindows,
+      // Don't use shell on Windows for daemon mode. With shell: true, Node spawns
+      // cmd.exe which doesn't reliably pass fd-based stdio to grandchild processes
+      // when combined with detached: true (known Node.js issue on Windows).
+      // CreateProcess still searches PATH, so executables are found without a shell.
       detached: true,
     });
 
