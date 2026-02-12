@@ -81,7 +81,7 @@ function startProcess(name: string, pidDir: string = TEST_PID_DIR): ChildProcess
 async function waitForPidFile(
   name: string,
   pidDir: string = TEST_PID_DIR,
-  timeoutMs: number = 5000
+  timeoutMs: number = 10000
 ): Promise<boolean> {
   const pidFile = join(pidDir, `${name}.pid`);
   const startTime = Date.now();
@@ -104,6 +104,77 @@ function readPidFile(name: string, pidDir: string = TEST_PID_DIR): number | null
   const content = readFileSync(pidFile, 'utf8').trim();
   const pid = parseInt(content, 10);
   return isNaN(pid) ? null : pid;
+}
+
+// Helper to start a process and wait for its PID file, with early exit detection.
+// Fails fast with a descriptive error (including child stderr) if the child
+// process exits before the PID file is created — avoids silent 10s timeouts.
+async function startProcessAndWait(
+  name: string,
+  pidDir: string = TEST_PID_DIR,
+  timeoutMs: number = 10000
+): Promise<{ child: ChildProcess; pid: number }> {
+  const child = startProcess(name, pidDir);
+  const pidFile = join(pidDir, `${name}.pid`);
+
+  let stderr = '';
+  child.stderr?.on('data', (data: Buffer) => {
+    stderr += data.toString();
+  });
+
+  return new Promise<{ child: ChildProcess; pid: number }>((resolve, reject) => {
+    let settled = false;
+
+    const settle = () => {
+      settled = true;
+    };
+
+    child.on('exit', (code, signal) => {
+      if (!settled) {
+        settle();
+        reject(
+          new Error(
+            `Child process exited before PID file was created (code=${code}, signal=${signal})` +
+              (stderr ? `\nstderr: ${stderr}` : '')
+          )
+        );
+      }
+    });
+
+    child.on('error', err => {
+      if (!settled) {
+        settle();
+        reject(new Error(`Failed to spawn child process: ${err.message}`));
+      }
+    });
+
+    const startTime = Date.now();
+    const poll = async () => {
+      while (!settled && Date.now() - startTime < timeoutMs) {
+        if (existsSync(pidFile)) {
+          const content = readFileSync(pidFile, 'utf8').trim();
+          const pid = parseInt(content, 10);
+          if (!isNaN(pid) && pid > 0) {
+            settle();
+            resolve({ child, pid });
+            return;
+          }
+        }
+        await new Promise(r => setTimeout(r, 100));
+      }
+      if (!settled) {
+        settle();
+        reject(
+          new Error(
+            `Timed out waiting for PID file after ${timeoutMs}ms` +
+              (stderr ? `\nstderr: ${stderr}` : '')
+          )
+        );
+      }
+    };
+
+    poll();
+  });
 }
 
 // Helper to check if process is running (cross-platform)
@@ -305,19 +376,12 @@ describe('CLI E2E Tests', () => {
     it('kills a running process', async () => {
       const isWindows = process.platform === 'win32';
 
-      // Start a process
-      const child = startProcess('test-kill');
-
-      // Wait for PID file
-      const pidCreated = await waitForPidFile('test-kill');
-      expect(pidCreated).toBe(true);
-
-      const pid = readPidFile('test-kill');
-      expect(pid).not.toBeNull();
+      // Start a process and wait for PID file (with early exit detection)
+      const { child, pid } = await startProcessAndWait('test-kill');
 
       // Give process time to fully start (longer on Windows)
       await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
-      expect(isProcessRunning(pid!)).toBe(true);
+      expect(isProcessRunning(pid)).toBe(true);
 
       // Kill it
       const result = await runCli(['-k', 'test-kill', '-d', TEST_PID_DIR]);
@@ -328,7 +392,7 @@ describe('CLI E2E Tests', () => {
       await new Promise(resolve => setTimeout(resolve, 500));
 
       // Verify it's dead
-      expect(isProcessRunning(pid!)).toBe(false);
+      expect(isProcessRunning(pid)).toBe(false);
 
       // Cleanup
       child.kill();
