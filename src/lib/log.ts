@@ -1,5 +1,5 @@
 /**
- * Log file operations for just-one daemon mode
+ * Log file operations for just-one (both foreground and daemon modes)
  */
 
 import {

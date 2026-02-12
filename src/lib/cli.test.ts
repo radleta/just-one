@@ -488,6 +488,24 @@ describe('parseArgs', () => {
     });
   });
 
+  describe('no-log flag', () => {
+    it('parses --no-log flag', () => {
+      const result = parseArgs(['-n', 'myapp', '--no-log', '--', 'node', 'server.js']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.noLog).toBe(true);
+      }
+    });
+
+    it('defaults noLog to false', () => {
+      const result = parseArgs(['-n', 'myapp', '--', 'node', 'server.js']);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.options.noLog).toBe(false);
+      }
+    });
+  });
+
   describe('logs option', () => {
     it('parses --logs with value', () => {
       const result = parseArgs(['--logs', 'myapp']);
@@ -649,6 +667,7 @@ describe('validateOptions', () => {
     timeout: undefined,
     grace: undefined,
     daemon: false,
+    noLog: false,
     logs: undefined,
     tail: false,
     lines: undefined,
@@ -797,6 +816,30 @@ describe('validateOptions', () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it('errors when --no-log is used with --daemon', () => {
+    const result = validateOptions({
+      ...baseOptions,
+      daemon: true,
+      noLog: true,
+      name: 'myapp',
+      command: ['node', 'server.js'],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain('--no-log cannot be used with --daemon');
+    }
+  });
+
+  it('allows --no-log with foreground mode', () => {
+    const result = validateOptions({
+      ...baseOptions,
+      noLog: true,
+      name: 'myapp',
+      command: ['node', 'server.js'],
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('getHelpText', () => {
@@ -824,6 +867,7 @@ describe('getHelpText', () => {
     expect(help).toContain('--timeout');
     expect(help).toContain('--grace');
     expect(help).toContain('--daemon');
+    expect(help).toContain('--no-log');
     expect(help).toContain('--logs');
     expect(help).toContain('--tail');
     expect(help).toContain('--lines');

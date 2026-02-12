@@ -12,6 +12,8 @@ import {
 } from './process.js';
 import { ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
+import { existsSync, readFileSync, mkdirSync, rmSync } from 'fs';
+import { join } from 'path';
 
 describe('Process operations', () => {
   describe('isProcessAlive', () => {
@@ -158,6 +160,86 @@ describe('spawnCommand', () => {
     expect(result.child.pid).toBe(result.pid);
 
     result.child.kill();
+  });
+
+  describe('with log file', () => {
+    const LOG_TEST_DIR = join(__dirname, '../../.test-process-log');
+
+    beforeEach(() => {
+      if (existsSync(LOG_TEST_DIR)) {
+        rmSync(LOG_TEST_DIR, { recursive: true, force: true });
+      }
+      mkdirSync(LOG_TEST_DIR, { recursive: true });
+    });
+
+    afterEach(() => {
+      if (existsSync(LOG_TEST_DIR)) {
+        rmSync(LOG_TEST_DIR, { recursive: true, force: true });
+      }
+    });
+
+    it('captures stdout to log file', async () => {
+      const logPath = join(LOG_TEST_DIR, 'test.log');
+      const result = spawnCommand('node', ['-e', 'console.log("hello-log-test")'], logPath);
+
+      await new Promise<void>(resolve => {
+        result.child.on('exit', () => resolve());
+      });
+
+      // Give a brief moment for the stream to flush
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      expect(existsSync(logPath)).toBe(true);
+      const content = readFileSync(logPath, 'utf8');
+      expect(content).toContain('hello-log-test');
+    });
+
+    it('captures stderr to log file', async () => {
+      const logPath = join(LOG_TEST_DIR, 'test-stderr.log');
+      const result = spawnCommand('node', ['-e', 'console.error("stderr-log-test")'], logPath);
+
+      await new Promise<void>(resolve => {
+        result.child.on('exit', () => resolve());
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      expect(existsSync(logPath)).toBe(true);
+      const content = readFileSync(logPath, 'utf8');
+      expect(content).toContain('stderr-log-test');
+    });
+
+    it('provides piped streams when logFilePath is given', async () => {
+      const logPath = join(LOG_TEST_DIR, 'test-streams.log');
+      const isWindows = process.platform === 'win32';
+      const command = isWindows ? 'cmd' : 'sleep';
+      const args = isWindows ? ['/c', 'ping', '-n', '60', '127.0.0.1'] : ['60'];
+
+      const result = spawnCommand(command, args, logPath);
+
+      // With piped stdio, child should have readable stdout/stderr
+      expect(result.child.stdout).not.toBeNull();
+      expect(result.child.stderr).not.toBeNull();
+
+      result.child.kill();
+      // Wait for child to exit so the log stream closes before afterEach cleanup
+      await new Promise<void>(resolve => result.child.on('exit', () => resolve()));
+    });
+
+    it('does not provide piped streams when logFilePath is omitted', async () => {
+      const isWindows = process.platform === 'win32';
+      const command = isWindows ? 'cmd' : 'sleep';
+      const args = isWindows ? ['/c', 'ping', '-n', '60', '127.0.0.1'] : ['60'];
+
+      const result = spawnCommand(command, args);
+
+      // With inherited stdio, stdout/stderr are null
+      expect(result.child.stdout).toBeNull();
+      expect(result.child.stderr).toBeNull();
+
+      result.child.kill();
+      await new Promise<void>(resolve => result.child.on('exit', () => resolve()));
+    });
   });
 });
 
@@ -334,6 +416,54 @@ describe('setupSignalHandlers', () => {
 
         const sigtermHandler = registeredHandlers.get('SIGTERM')!;
         sigtermHandler();
+
+        expect(mockChild.kill).toHaveBeenCalledWith('SIGTERM');
+      });
+    }
+  });
+
+  describe('pipedStdio signal handling', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    if (process.platform === 'win32') {
+      it('calls child.kill(SIGTERM) on SIGINT when pipedStdio is true', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess, undefined, true);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        sigintHandler();
+
+        expect(mockChild.kill).toHaveBeenCalledWith('SIGTERM');
+      });
+
+      it('does not call child.kill on SIGINT when pipedStdio is false', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess, undefined, false);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        sigintHandler();
+
+        expect(mockChild.kill).not.toHaveBeenCalled();
+      });
+
+      it('still sets force-kill timer when pipedStdio is true', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess, undefined, true);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        sigintHandler();
+
+        expect(vi.getTimerCount()).toBe(1);
+      });
+    } else {
+      it('forwards SIGTERM to child on SIGINT regardless of pipedStdio', () => {
+        setupSignalHandlers(mockChild as unknown as ChildProcess, undefined, true);
+
+        const sigintHandler = registeredHandlers.get('SIGINT')!;
+        sigintHandler();
 
         expect(mockChild.kill).toHaveBeenCalledWith('SIGTERM');
       });

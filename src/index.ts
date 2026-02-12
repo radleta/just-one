@@ -135,34 +135,47 @@ async function handleRun(options: CliOptions): Promise<number> {
   log(`Starting: ${command} ${args.join(' ')}`, options);
 
   try {
-    if (options.daemon) {
-      // Daemon mode: run detached with log file capture
-      // Ensure PID directory exists before opening log file
+    // Prepare log file (skipped in foreground mode when --no-log is set)
+    const enableLog = !options.noLog || options.daemon;
+    let logPath: string | undefined;
+
+    if (enableLog) {
       if (!existsSync(options.pidDir)) {
         mkdirSync(options.pidDir, { recursive: true });
       }
       rotateLogIfNeeded(name, options.pidDir);
-      const logPath = getLogFilePath(name, options.pidDir);
-      const { pid } = spawnCommandDaemon(command, args, logPath);
+      logPath = getLogFilePath(name, options.pidDir);
+    }
+
+    if (options.daemon) {
+      // Daemon mode: run detached with log file capture
+      // Daemon always has logPath (enableLog is true when daemon is true)
+      if (!existsSync(options.pidDir)) {
+        mkdirSync(options.pidDir, { recursive: true });
+      }
+      const { pid } = spawnCommandDaemon(command, args, logPath!);
 
       writePid(name, pid, options.pidDir);
       log(`Daemon started with PID: ${pid}`, options);
-      log(`Logs: ${logPath}`, options);
+      log(`Logs: ${logPath!}`, options);
       return 0;
     }
 
-    // Foreground mode (existing behavior)
-    const { child, pid } = spawnCommand(command, args);
+    // Foreground mode: tee stdout/stderr to terminal and log file (unless --no-log)
+    const { child, pid } = spawnCommand(command, args, logPath);
 
-    // Save PID
+    // Save PID (pidDir may not exist yet if --no-log skipped log prep)
+    if (!existsSync(options.pidDir)) {
+      mkdirSync(options.pidDir, { recursive: true });
+    }
     writePid(name, pid, options.pidDir);
     log(`Process started with PID: ${pid}`, options);
 
-    // Set up signal handlers
+    // Set up signal handlers; pipedStdio only when log capture is active
     // Note: We intentionally do NOT delete the PID file on exit.
     // If the process exits unexpectedly, the PID file allows the next run
     // to find and kill any orphaned processes.
-    setupSignalHandlers(child);
+    setupSignalHandlers(child, undefined, !!logPath);
 
     // The process will keep running until it exits or is killed
     // The exit handler in setupSignalHandlers will call process.exit

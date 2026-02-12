@@ -15,6 +15,7 @@ export interface CliOptions {
   timeout?: number;
   grace?: number;
   daemon: boolean;
+  noLog: boolean;
   logs?: string;
   tail: boolean;
   lines?: number;
@@ -91,6 +92,7 @@ export function parseArgs(args: string[]): ParseOutput {
     timeout: undefined,
     grace: undefined,
     daemon: false,
+    noLog: false,
     logs: undefined,
     tail: false,
     lines: undefined,
@@ -270,6 +272,13 @@ export function parseArgs(args: string[]): ParseOutput {
       continue;
     }
 
+    // No log
+    if (arg === '--no-log') {
+      options.noLog = true;
+      i++;
+      continue;
+    }
+
     // Logs (requires value)
     if (arg === '--logs' || arg === '-L') {
       const value = args[i + 1];
@@ -411,6 +420,11 @@ export function validateOptions(options: CliOptions): ParseOutput {
   // Daemon requires name and command (validated below as part of normal run)
   // No special check needed here since daemon is a modifier for run
 
+  // --no-log is incompatible with --daemon (daemon always captures to log file)
+  if (options.noLog && options.daemon) {
+    return { success: false, error: 'Option --no-log cannot be used with --daemon' };
+  }
+
   // Running a command requires both name and command
   if (!options.name) {
     return { success: false, error: 'Option --name is required when running a command' };
@@ -445,7 +459,8 @@ Usage:
 
 Options:
   -n, --name <name>      Name to identify this process (required for running)
-  -D, --daemon           Run in background with output captured to log file
+  -D, --daemon           Run in background (detached). Logs are captured in both modes
+  --no-log               Disable log file capture in foreground mode
   -L, --logs <name>      View captured logs for a named process
   -f, --tail             Follow log output in real-time (use with --logs)
   --lines <n>            Number of lines to show (use with --logs, default: all)
