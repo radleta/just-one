@@ -250,6 +250,11 @@ export function spawnCommand(command: string, args: string[], logFilePath?: stri
 
   if (logFilePath && child.stdout && child.stderr) {
     const logStream = createWriteStream(logFilePath, { flags: 'a' });
+    logStream.on('error', () => {
+      // Log stream errors (ENOENT from directory removal, disk full, etc.)
+      // must not become unhandled exceptions. stdout/stderr are still piped
+      // to the terminal, so the process continues to work normally.
+    });
     child.stdout.pipe(process.stdout);
     child.stdout.pipe(logStream);
     child.stderr.pipe(process.stderr);

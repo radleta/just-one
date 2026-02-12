@@ -6,11 +6,12 @@ import {
   forceKillProcess,
   terminateProcess,
   spawnCommand,
+  spawnCommandDaemon,
   setupSignalHandlers,
   getProcessStartTime,
   isSameProcessInstance,
 } from './process.js';
-import { ChildProcess } from 'child_process';
+import { ChildProcess, spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import { existsSync, readFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -129,6 +130,162 @@ describe('Process operations', () => {
       const result = await terminateProcess(4194000);
       expect(result).toBe(true);
     });
+  });
+});
+
+describe('killProcess with real processes', () => {
+  let childPid: number | undefined;
+
+  afterEach(() => {
+    if (childPid) {
+      try {
+        process.kill(childPid, 'SIGKILL');
+      } catch {
+        /* already dead */
+      }
+      childPid = undefined;
+    }
+  });
+
+  it('kills a running process and returns true', async () => {
+    const child = spawn('sleep', ['60'], { detached: true });
+    child.unref();
+    childPid = child.pid!;
+    expect(isProcessAlive(childPid)).toBe(true);
+
+    const result = killProcess(childPid);
+    expect(result).toBe(true);
+
+    const died = await waitForProcessToDie(childPid, 2000);
+    expect(died).toBe(true);
+  });
+});
+
+describe('forceKillProcess with real processes', () => {
+  let childPid: number | undefined;
+
+  afterEach(() => {
+    if (childPid) {
+      try {
+        process.kill(childPid, 'SIGKILL');
+      } catch {
+        /* already dead */
+      }
+      childPid = undefined;
+    }
+  });
+
+  it('force kills a running process and returns true', async () => {
+    const child = spawn('sleep', ['60'], { detached: true });
+    child.unref();
+    childPid = child.pid!;
+    expect(isProcessAlive(childPid)).toBe(true);
+
+    const result = forceKillProcess(childPid);
+    expect(result).toBe(true);
+
+    const died = await waitForProcessToDie(childPid, 2000);
+    expect(died).toBe(true);
+  });
+});
+
+describe('terminateProcess with real processes', () => {
+  let childPid: number | undefined;
+
+  afterEach(() => {
+    if (childPid) {
+      try {
+        process.kill(childPid, 'SIGKILL');
+      } catch {
+        /* already dead */
+      }
+      childPid = undefined;
+    }
+  });
+
+  it('terminates a running process via SIGTERM', async () => {
+    const child = spawn('sleep', ['60'], { detached: true });
+    child.unref();
+    childPid = child.pid!;
+    expect(isProcessAlive(childPid)).toBe(true);
+
+    const result = await terminateProcess(childPid, 2000);
+    expect(result).toBe(true);
+    expect(isProcessAlive(childPid)).toBe(false);
+  });
+
+  it('escalates to SIGKILL when SIGTERM is ignored', async () => {
+    // Spawn a process that traps (ignores) SIGTERM
+    const child = spawn('bash', ['-c', "trap '' TERM; sleep 60"], { detached: true });
+    child.unref();
+    childPid = child.pid!;
+
+    // Brief wait for the trap to be set up
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(isProcessAlive(childPid)).toBe(true);
+
+    // Use a short grace period so it escalates to SIGKILL quickly
+    const result = await terminateProcess(childPid, 500);
+    expect(result).toBe(true);
+    expect(isProcessAlive(childPid)).toBe(false);
+  });
+});
+
+describe('spawnCommandDaemon', () => {
+  const DAEMON_TEST_DIR = join(__dirname, '../../.test-daemon-log');
+  let daemonPid: number | undefined;
+
+  beforeEach(() => {
+    if (existsSync(DAEMON_TEST_DIR)) {
+      rmSync(DAEMON_TEST_DIR, { recursive: true, force: true });
+    }
+    mkdirSync(DAEMON_TEST_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (daemonPid) {
+      try {
+        process.kill(daemonPid, 'SIGKILL');
+      } catch {
+        /* already dead */
+      }
+      daemonPid = undefined;
+    }
+    if (existsSync(DAEMON_TEST_DIR)) {
+      rmSync(DAEMON_TEST_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('spawns a daemon process and returns valid result', () => {
+    const logPath = join(DAEMON_TEST_DIR, 'daemon.log');
+    const result = spawnCommandDaemon('sleep', ['60'], logPath);
+    daemonPid = result.pid;
+
+    expect(result.child).toBeDefined();
+    expect(result.pid).toBeGreaterThan(0);
+    expect(typeof result.pid).toBe('number');
+  });
+
+  it('captures daemon output to log file', async () => {
+    const logPath = join(DAEMON_TEST_DIR, 'daemon-output.log');
+    const result = spawnCommandDaemon('node', ['-e', 'console.log("daemon-hello")'], logPath);
+    daemonPid = result.pid;
+
+    // Wait for daemon to run and write output
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    expect(existsSync(logPath)).toBe(true);
+    const content = readFileSync(logPath, 'utf8');
+    expect(content).toContain('daemon-hello');
+  });
+
+  it('creates a detached process that survives parent', () => {
+    const logPath = join(DAEMON_TEST_DIR, 'daemon-detached.log');
+    const result = spawnCommandDaemon('sleep', ['60'], logPath);
+    daemonPid = result.pid;
+
+    // Process should be alive and independent
+    expect(isProcessAlive(result.pid)).toBe(true);
   });
 });
 
