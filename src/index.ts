@@ -45,7 +45,7 @@ async function handleKill(name: string, options: CliOptions): Promise<number> {
 
   if (pid === null) {
     log(`No process found with name: ${name}`, options);
-    return 0;
+    return 1;
   }
 
   // Verify this is the same process we originally started (prevents killing

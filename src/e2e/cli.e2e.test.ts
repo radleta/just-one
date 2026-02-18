@@ -373,10 +373,23 @@ describe('CLI E2E Tests', () => {
   });
 
   describe('Kill Command', () => {
-    it('handles killing non-existent process gracefully', async () => {
+    it('exits 1 when killing non-existent process', async () => {
       const result = await runCli(['-k', 'nonexistent', '-d', TEST_PID_DIR]);
-      expect(result.code).toBe(0);
+      expect(result.code).toBe(1);
       expect(result.stdout).toContain('No process found');
+    });
+
+    it('exits 0 when killing stale PID (process not running)', async () => {
+      // Create orphaned PID file with non-existent PID
+      const fs = await import('fs');
+      fs.writeFileSync(join(TEST_PID_DIR, 'stale-kill.pid'), '999999999', 'utf8');
+
+      const result = await runCli(['-k', 'stale-kill', '-d', TEST_PID_DIR]);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain('not running');
+
+      // PID file should be cleaned up
+      expect(existsSync(join(TEST_PID_DIR, 'stale-kill.pid'))).toBe(false);
     });
 
     it('kills a running process', async () => {
@@ -524,7 +537,7 @@ describe('CLI E2E Tests', () => {
 
     it('suppresses output in quiet mode for kill', async () => {
       const result = await runCli(['-k', 'nonexistent', '-q', '-d', TEST_PID_DIR]);
-      expect(result.code).toBe(0);
+      expect(result.code).toBe(1);
       expect(result.stdout).toBe('');
     });
   });
@@ -1745,6 +1758,47 @@ describe('Exit Code Regression (Windows fix)', () => {
     ]);
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('Daemon started');
+  });
+
+  it('kill exits 0 even when process.exitCode is polluted', async () => {
+    const isWindows = process.platform === 'win32';
+    const sleepCmd = isWindows ? 'ping' : 'sleep';
+    const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
+
+    // Start a daemon first (via normal CLI, not poisoned)
+    const startResult = await runCli([
+      '-n',
+      'test-exitcode-kill',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(startResult.code).toBe(0);
+
+    const pid = readPidFile('test-exitcode-kill');
+    expect(pid).not.toBeNull();
+
+    // Give process time to fully start
+    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+    expect(isProcessRunning(pid!)).toBe(true);
+
+    // Kill via poisoned wrapper — should still exit 0
+    const killResult = await runCliWithPoisonedExitCode([
+      '-k',
+      'test-exitcode-kill',
+      '-d',
+      TEST_PID_DIR,
+    ]);
+    expect(killResult.code).toBe(0);
+    expect(killResult.stdout).toContain('killed');
+  });
+
+  it('kill of unknown exits 1 even when process.exitCode is polluted', async () => {
+    const result = await runCliWithPoisonedExitCode(['-k', 'nonexistent', '-d', TEST_PID_DIR]);
+    expect(result.code).toBe(1);
   });
 });
 
