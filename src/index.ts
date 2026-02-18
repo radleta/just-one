@@ -179,9 +179,9 @@ async function handleRun(options: CliOptions): Promise<number> {
     // to find and kill any orphaned processes.
     setupSignalHandlers(child, undefined, !!logPath);
 
-    // The process will keep running until it exits or is killed
-    // The exit handler in setupSignalHandlers will call process.exit
-    return 0;
+    // Keep the process alive until the child exits or is killed.
+    // setupSignalHandlers' child.on('exit') handler will call process.exit().
+    return new Promise<number>(() => {});
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logError(`Failed to start process: ${message}`);

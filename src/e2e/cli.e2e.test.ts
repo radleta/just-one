@@ -1595,6 +1595,112 @@ describe('PID Command with Quiet Mode', () => {
   });
 });
 
+describe('Exit Code Regression (Windows fix)', () => {
+  // Regression tests for the Windows exit code bug where all commands exited 1.
+  // Root cause: cli.ts relied on natural exit for code 0, but environment factors
+  // (e.g. pidusage DEP0190 warning) could set process.exitCode = 1 before natural exit.
+  // Fix: cli.ts now always calls process.exit(code) explicitly.
+  //
+  // These tests poison process.exitCode = 1 BEFORE cli.js runs, proving that
+  // the explicit process.exit(code) call overrides it. Without the fix, these fail.
+
+  const WRAPPER_PATH = join(TEST_PID_DIR, 'exitcode-wrapper.mjs');
+
+  /** Run CLI through a wrapper that sets process.exitCode = 1 before importing cli.js */
+  function runCliWithPoisonedExitCode(
+    args: string[]
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
+    return new Promise(resolve => {
+      const child = spawn('node', [WRAPPER_PATH, ...args], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout?.on('data', (data: Buffer) => {
+        stdout += data.toString();
+      });
+
+      child.stderr?.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      child.on('close', code => {
+        resolve({ code: code ?? 1, stdout, stderr });
+      });
+
+      child.on('error', err => {
+        resolve({ code: 1, stdout, stderr: err.message });
+      });
+    });
+  }
+
+  beforeEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+    mkdirSync(TEST_PID_DIR, { recursive: true });
+
+    // Write a wrapper that poisons process.exitCode before running the CLI.
+    // On Windows, forward-slash paths work in ESM import URLs.
+    const cliAbsPath = join(__dirname, '../../dist/cli.js').replace(/\\/g, '/');
+    writeFileSync(
+      WRAPPER_PATH,
+      [
+        '// Simulate environment pollution (e.g. DEP0190 setting exitCode)',
+        'process.exitCode = 1;',
+        `import('file:///${cliAbsPath}');`,
+      ].join('\n')
+    );
+  });
+
+  afterEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+  });
+
+  it('--version exits 0 even when process.exitCode is polluted', async () => {
+    const result = await runCliWithPoisonedExitCode(['--version']);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/\d+\.\d+\.\d+/);
+  });
+
+  it('--help exits 0 even when process.exitCode is polluted', async () => {
+    const result = await runCliWithPoisonedExitCode(['--help']);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Usage:');
+  });
+
+  it('-l exits 0 even when process.exitCode is polluted', async () => {
+    const result = await runCliWithPoisonedExitCode(['-l', '-d', TEST_PID_DIR]);
+    expect(result.code).toBe(0);
+  });
+
+  it('error cases still exit 1 when process.exitCode is polluted', async () => {
+    const result = await runCliWithPoisonedExitCode(['-s', 'nonexistent', '-d', TEST_PID_DIR]);
+    expect(result.code).toBe(1);
+  });
+
+  it('daemon mode exits 0 even when process.exitCode is polluted', async () => {
+    const isWindows = process.platform === 'win32';
+    const sleepCmd = isWindows ? 'ping' : 'sleep';
+    const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
+
+    const result = await runCliWithPoisonedExitCode([
+      '-n',
+      'test-exitcode',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Daemon started');
+  });
+});
+
 describe('Daemon Mode with Auto-Created Directory', () => {
   const CUSTOM_DIR = join(__dirname, '../../.test-pids-autocreate');
 
