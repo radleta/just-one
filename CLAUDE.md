@@ -19,7 +19,8 @@
 
 **Source files** (`src/`):
 
-- `index.ts` - CLI entry point and main handler logic (handleRun, handleKill, handleList, handleStatus, handleKillAll, handleClean, handlePid, handleWait, handleLogs)
+- `index.ts` - Main handler logic and pure library export (handleRun, handleKill, handleList, handleStatus, handleKillAll, handleClean, handlePid, handleWait, handleLogs)
+- `cli.ts` - CLI entry point (imports `main()` from index.ts, calls it, handles process exit)
 - `lib/cli.ts` - Command-line argument parsing and validation
 - `lib/process.ts` - Process spawn/kill/management logic (CRITICAL - see safety section)
 - `lib/pid.ts` - PID file read/write/delete/list operations
@@ -44,9 +45,10 @@
 
 **Build output:**
 
-- `dist/index.js` - ESM bundle (main entry)
+- `dist/cli.js` - CLI entry point (calls `main()`, handles exit)
+- `dist/index.js` - Library export (pure, no side effects)
 - `dist/index.d.ts` - TypeScript declarations
-- `bin/just-one.js` - Shebang wrapper
+- `bin/just-one.js` - Shebang wrapper (imports `dist/cli.js`)
 - `bin/daemon-helper.js` - Windows daemon mode wrapper (spawned by `spawnCommandDaemon`)
 
 ## CRITICAL: Process Killing Safety Guidelines

@@ -13,7 +13,7 @@ import { join } from 'path';
 //   JUST_ONE_NPX=1 npm test                    # uses npx @radleta/just-one
 //   JUST_ONE_NPX=1 JUST_ONE_CLI=@radleta/just-one@1.0.0 npm test  # specific version
 const USE_NPX = process.env.JUST_ONE_NPX === '1';
-const CLI_PATH = process.env.JUST_ONE_CLI || join(__dirname, '../../dist/index.js');
+const CLI_PATH = process.env.JUST_ONE_CLI || join(__dirname, '../../dist/cli.js');
 const TEST_PID_DIR = join(__dirname, '../../.test-pids');
 
 // Get spawn command and args based on configuration

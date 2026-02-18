@@ -1,6 +1,8 @@
-#!/usr/bin/env node
 /**
  * just-one - Ensure only one instance of a command runs at a time
+ *
+ * This module exports main() as a pure library function with no side effects.
+ * The CLI entry point (src/cli.ts) imports and calls main().
  */
 
 import { createRequire } from 'module';
@@ -494,19 +496,4 @@ async function main(): Promise<number> {
   return await handleRun(options);
 }
 
-// Run the CLI
-main()
-  .then(code => {
-    // Only exit if we're not running a child process
-    // The child process exit handler will call process.exit
-    if (code !== 0) {
-      process.exit(code);
-    }
-  })
-  .catch(err => {
-    console.error('Unexpected error:', err);
-    process.exit(1);
-  });
-
-// Export for testing
 export { main };
