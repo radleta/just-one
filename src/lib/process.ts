@@ -315,6 +315,7 @@ export function spawnCommandDaemon(
       detached: true,
       stdio: 'ignore',
       windowsHide: true,
+      env: process.env,
     });
 
     if (child.pid === undefined) {
@@ -331,6 +332,7 @@ export function spawnCommandDaemon(
     const child = spawn(command, args, {
       stdio: ['ignore', logFd, logFd] as StdioOptions,
       detached: true,
+      env: process.env,
     });
 
     if (child.pid === undefined) {

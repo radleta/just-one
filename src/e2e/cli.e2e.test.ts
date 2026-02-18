@@ -1068,6 +1068,53 @@ describe('Daemon Mode', () => {
     expect(logContent).toContain('second line');
   });
 
+  it('daemon inherits caller environment variables', async () => {
+    // Verify environment flows through the full CLI -> daemon chain.
+    // On Windows this exercises the daemon-helper.js wrapper; on Unix the direct spawn.
+    const envKey = 'JUST_ONE_E2E_ENV_TEST';
+    const envVal = 'e2e-env-' + Date.now();
+
+    const scriptPath = join(TEST_PID_DIR, '_env-e2e.js');
+    writeFileSync(scriptPath, `console.log(process.env['${envKey}'] || 'NOT_SET')`);
+
+    const { command, args } = getCliSpawnArgs([
+      '-n',
+      'test-daemon-env',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      scriptPath,
+    ]);
+
+    // Spawn with the custom env var set
+    const child = spawn(command, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, [envKey]: envVal },
+    });
+
+    const result = await new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
+      let stdout = '';
+      let stderr = '';
+      child.stdout?.on('data', (d: Buffer) => {
+        stdout += d.toString();
+      });
+      child.stderr?.on('data', (d: Buffer) => {
+        stderr += d.toString();
+      });
+      child.on('close', code => resolve({ code: code ?? 1, stdout, stderr }));
+    });
+
+    expect(result.code).toBe(0);
+
+    // Poll daemon log for the env var value
+    const logPath = join(TEST_PID_DIR, 'test-daemon-env.log');
+    const logContent = await waitForFileContent(logPath, envVal, 5000);
+    expect(logContent).not.toContain('NOT_SET');
+    expect(logContent).toContain(envVal);
+  });
+
   it('daemon mode resolves .cmd wrappers on Windows', async () => {
     if (process.platform !== 'win32') return; // .cmd wrappers are Windows-only
 

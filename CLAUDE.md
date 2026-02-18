@@ -233,7 +233,8 @@ npm run release:major    # Force major version bump
 **IMPORTANT: Daemon mode spawn on Windows:**
 
 - **NEVER** use `shell: true` + `detached: true` with fd-based stdio — `cmd.exe` doesn't pass inherited file descriptors to grandchild processes (known Node.js issue). Log files will be created but stay empty.
-- **Daemon mode uses a helper wrapper** (`bin/daemon-helper.js`): the parent spawns `node daemon-helper.js <logPath> <command> <args>` with `detached: true, stdio: 'ignore'`. The helper then spawns the real command with `shell: true` + piped stdio, piping output to the log file. This resolves `.cmd` wrappers (every npm binary on Windows) while avoiding the fd-based stdio limitation.
+- **Daemon mode uses a helper wrapper** (`bin/daemon-helper.js`): the parent spawns `node daemon-helper.js <logPath> <command> <args>` with `detached: true, stdio: 'ignore', env: process.env`. The helper then spawns the real command with `shell: true` + piped stdio + `env: process.env`, piping output to the log file. This resolves `.cmd` wrappers (every npm binary on Windows) while avoiding the fd-based stdio limitation.
+- **Environment inheritance** — All daemon spawn calls (both platforms) explicitly pass `env: process.env` to ensure the detached child inherits the caller's full environment (PATH, custom vars, etc.). Without this, commands that depend on PATH augmentation (npm scripts, nvm, pyenv, venv) may fail in daemon mode.
 - Foreground mode (`spawnCommand`) can use `shell: true` because it uses piped stdio (not fd-based) and `detached: false` on Windows.
 - **Foreground piped stdio + Windows signals:** With `stdio: ['inherit', 'pipe', 'pipe']`, stdin is inherited but stdout/stderr are piped. `CTRL_C_EVENT` may not be delivered to the child, so `setupSignalHandlers` explicitly sends `SIGTERM` when `pipedStdio=true`.
 
@@ -252,6 +253,7 @@ If these don't match within 5 seconds, the PID was likely reused by an unrelated
 - **Process not killed on Windows** - Ensure using `/T` flag to kill tree
 - **Orphaned PID file** - Normal behavior; next run will detect and handle
 - **E2E tests flaky on Windows** - Increase timeouts (Windows process ops are slower)
+- **Daemon loses caller's environment (PATH, etc.)** - Was caused by daemon spawn calls not explicitly passing `env: process.env`; now fixed — all daemon spawn paths (both platforms + daemon-helper.js) explicitly inherit the caller's environment
 - **Windows daemon tests: empty logs** - Was caused by `shell: true` + `detached: true` with fd stdio; now fixed via daemon-helper.js wrapper (see Cross-Platform Notes)
 - **Windows file locking in test cleanup** - Kill tracked daemon processes before `rmSync`; use retry logic for directory removal
 - **Windows `cmd.exe` quoting** - Avoid `node -e 'console.log("...")'` in tests; write helper `.js` scripts to disk instead

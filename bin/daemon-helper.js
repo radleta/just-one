@@ -36,6 +36,7 @@ const child = spawn(command, args, {
   shell: true,
   stdio: ['ignore', 'pipe', 'pipe'],
   windowsHide: true,
+  env: process.env,
 });
 
 child.stdout.pipe(logStream, { end: false });

@@ -312,6 +312,41 @@ describe('spawnCommandDaemon', () => {
     // Process should be alive and independent
     expect(isProcessAlive(result.pid)).toBe(true);
   });
+
+  it('inherits caller environment variables', async () => {
+    // Verify that daemon processes see environment variables set by the caller.
+    // This is a defensive contract test: Node.js spawn() defaults env to process.env,
+    // but daemon mode uses detached processes (and on Windows, an intermediate helper
+    // wrapper) where environment propagation must be explicitly guaranteed.
+    const envKey = 'JUST_ONE_TEST_ENV_VAR';
+    const envVal = 'daemon-env-inheritance-' + Date.now();
+    process.env[envKey] = envVal;
+
+    try {
+      const envScript = join(DAEMON_TEST_DIR, '_env-check.js');
+      writeFileSync(envScript, `console.log(process.env['${envKey}'] || 'NOT_SET')`);
+
+      const logPath = join(DAEMON_TEST_DIR, 'daemon-env.log');
+      const result = spawnCommandDaemon('node', [envScript], logPath);
+      daemonPid = result.pid;
+
+      // Poll for log content — fail fast if env var was not inherited
+      const start = Date.now();
+      let content = '';
+      while (Date.now() - start < 5000) {
+        if (existsSync(logPath)) {
+          content = readFileSync(logPath, 'utf8');
+          if (content.includes(envVal) || content.includes('NOT_SET')) break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      expect(content).not.toContain('NOT_SET');
+      expect(content).toContain(envVal);
+    } finally {
+      delete process.env[envKey];
+    }
+  });
 });
 
 describe('spawnCommand', () => {
