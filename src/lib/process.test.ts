@@ -13,7 +13,8 @@ import {
 } from './process.js';
 import { ChildProcess, spawn } from 'child_process';
 import { EventEmitter } from 'events';
-import { existsSync, readFileSync, mkdirSync, rmSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { execSync } from 'child_process';
 import { join } from 'path';
 
 describe('Process operations', () => {
@@ -233,6 +234,7 @@ describe('terminateProcess with real processes', () => {
 
 describe('spawnCommandDaemon', () => {
   const DAEMON_TEST_DIR = join(__dirname, '../../.test-daemon-log');
+  const isWindows = process.platform === 'win32';
   let daemonPid: number | undefined;
 
   beforeEach(() => {
@@ -245,7 +247,12 @@ describe('spawnCommandDaemon', () => {
   afterEach(() => {
     if (daemonPid) {
       try {
-        process.kill(daemonPid, 'SIGKILL');
+        if (isWindows) {
+          // Kill process tree (wrapper + child) on Windows
+          execSync(`taskkill /PID ${daemonPid} /T /F`, { stdio: 'pipe' });
+        } else {
+          process.kill(daemonPid, 'SIGKILL');
+        }
       } catch {
         /* already dead */
       }
@@ -257,8 +264,12 @@ describe('spawnCommandDaemon', () => {
   });
 
   it('spawns a daemon process and returns valid result', () => {
+    // Use a script file for cross-platform compatibility (avoids cmd.exe quoting)
+    const sleepScript = join(DAEMON_TEST_DIR, '_sleep.js');
+    writeFileSync(sleepScript, 'setTimeout(() => {}, 60000)');
+
     const logPath = join(DAEMON_TEST_DIR, 'daemon.log');
-    const result = spawnCommandDaemon('sleep', ['60'], logPath);
+    const result = spawnCommandDaemon('node', [sleepScript], logPath);
     daemonPid = result.pid;
 
     expect(result.child).toBeDefined();
@@ -267,21 +278,35 @@ describe('spawnCommandDaemon', () => {
   });
 
   it('captures daemon output to log file', async () => {
+    // Write a helper script to avoid cmd.exe quoting issues on Windows
+    const echoScript = join(DAEMON_TEST_DIR, '_echo.js');
+    writeFileSync(echoScript, 'console.log("daemon-hello")');
+
     const logPath = join(DAEMON_TEST_DIR, 'daemon-output.log');
-    const result = spawnCommandDaemon('node', ['-e', 'console.log("daemon-hello")'], logPath);
+    const result = spawnCommandDaemon('node', [echoScript], logPath);
     daemonPid = result.pid;
 
-    // Wait for daemon to run and write output
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // Poll for log content (robust across platforms and wrapper overhead)
+    const start = Date.now();
+    let content = '';
+    while (Date.now() - start < 5000) {
+      if (existsSync(logPath)) {
+        content = readFileSync(logPath, 'utf8');
+        if (content.includes('daemon-hello')) break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
 
     expect(existsSync(logPath)).toBe(true);
-    const content = readFileSync(logPath, 'utf8');
     expect(content).toContain('daemon-hello');
   });
 
   it('creates a detached process that survives parent', () => {
+    const sleepScript = join(DAEMON_TEST_DIR, '_sleep-detach.js');
+    writeFileSync(sleepScript, 'setTimeout(() => {}, 60000)');
+
     const logPath = join(DAEMON_TEST_DIR, 'daemon-detached.log');
-    const result = spawnCommandDaemon('sleep', ['60'], logPath);
+    const result = spawnCommandDaemon('node', [sleepScript], logPath);
     daemonPid = result.pid;
 
     // Process should be alive and independent

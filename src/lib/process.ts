@@ -3,7 +3,9 @@
  */
 
 import { spawn, execSync, ChildProcess, type StdioOptions } from 'child_process';
-import { openSync, closeSync, createWriteStream } from 'fs';
+import { existsSync, openSync, closeSync, createWriteStream } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import pidusage from 'pidusage';
 
 const isWindows = process.platform === 'win32';
@@ -269,25 +271,65 @@ export function spawnCommand(command: string, args: string[], logFilePath?: stri
 }
 
 /**
+ * Resolve the path to bin/daemon-helper.js by walking up from the current module.
+ * Works from both dist/ (production build) and src/lib/ (vitest).
+ */
+let _daemonHelperPath: string | undefined;
+function getDaemonHelperPath(): string {
+  if (_daemonHelperPath) return _daemonHelperPath;
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 5; i++) {
+    const candidate = join(dir, 'bin', 'daemon-helper.js');
+    if (existsSync(candidate)) {
+      _daemonHelperPath = candidate;
+      return candidate;
+    }
+    dir = dirname(dir);
+  }
+  throw new Error('Cannot find bin/daemon-helper.js — package installation may be corrupted');
+}
+
+/**
  * Spawn a command in daemon mode (detached, with output captured to log file).
  * The parent process does not wait for the child — it calls child.unref().
+ *
+ * On Windows, spawns a lightweight helper process (daemon-helper.js) that uses
+ * shell: true + piped stdio to resolve .cmd wrappers. Direct fd-based stdio with
+ * cmd.exe + detached doesn't work (known Node.js limitation — logs stay empty).
+ *
+ * On Unix, uses fd-based stdio directly (no .cmd issue, no shell needed).
  */
 export function spawnCommandDaemon(
   command: string,
   args: string[],
   logFilePath: string
 ): SpawnResult {
+  if (isWindows) {
+    // Pre-create the log file so callers can rely on its existence immediately
+    // (matching the Unix fd-based path which creates via openSync before spawn).
+    // The helper opens with append mode, so no data is lost.
+    closeSync(openSync(logFilePath, 'a'));
+
+    const helperPath = getDaemonHelperPath();
+    const child = spawn(process.execPath, [helperPath, logFilePath, command, ...args], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+
+    if (child.pid === undefined) {
+      throw new Error('Failed to spawn daemon process');
+    }
+
+    child.unref();
+    return { child, pid: child.pid };
+  }
+
+  // Unix: fd-based stdio works reliably with detached processes
   const logFd = openSync(logFilePath, 'a');
-
   try {
-    const stdio: StdioOptions = ['ignore', logFd, logFd];
-
     const child = spawn(command, args, {
-      stdio,
-      // Don't use shell on Windows for daemon mode. With shell: true, Node spawns
-      // cmd.exe which doesn't reliably pass fd-based stdio to grandchild processes
-      // when combined with detached: true (known Node.js issue on Windows).
-      // CreateProcess still searches PATH, so executables are found without a shell.
+      stdio: ['ignore', logFd, logFd] as StdioOptions,
       detached: true,
     });
 
@@ -296,11 +338,7 @@ export function spawnCommandDaemon(
     }
 
     child.unref();
-
-    return {
-      child,
-      pid: child.pid,
-    };
+    return { child, pid: child.pid };
   } finally {
     closeSync(logFd);
   }

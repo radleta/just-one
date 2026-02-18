@@ -1068,6 +1068,26 @@ describe('Daemon Mode', () => {
     expect(logContent).toContain('second line');
   });
 
+  it('daemon mode resolves .cmd wrappers on Windows', async () => {
+    if (process.platform !== 'win32') return; // .cmd wrappers are Windows-only
+
+    // Create a node script that the .cmd wrapper will execute
+    const scriptPath = join(TEST_PID_DIR, '_cmd-target.js');
+    writeFileSync(scriptPath, 'console.log("cmd-wrapper-works");');
+
+    // Create a .cmd wrapper (same pattern npm generates for bin entries)
+    const cmdPath = join(TEST_PID_DIR, '_cmd-test.cmd');
+    writeFileSync(cmdPath, `@node "${scriptPath}" %*\r\n`);
+
+    const result = await runCli(['-n', 'test-daemon-cmd', '-D', '-d', TEST_PID_DIR, '--', cmdPath]);
+
+    expect(result.code).toBe(0);
+
+    const logPath = join(TEST_PID_DIR, 'test-daemon-cmd.log');
+    const logContent = await waitForFileContent(logPath, 'cmd-wrapper-works');
+    expect(logContent).toContain('cmd-wrapper-works');
+  });
+
   it('replaces existing daemon (kills first, starts second)', async () => {
     const isWindows = process.platform === 'win32';
     const sleepCmd = isWindows ? 'ping' : 'sleep';
