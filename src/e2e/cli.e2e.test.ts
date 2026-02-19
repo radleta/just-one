@@ -1233,6 +1233,98 @@ describe('Daemon Mode', () => {
     const backupContent = readFileSync(backupPath, 'utf8');
     expect(backupContent.length).toBeGreaterThan(10 * 1024 * 1024);
   });
+
+  it('daemon-helper exits after child exits (no zombie)', async () => {
+    // Regression test for daemon-helper zombie bug: when the child process exits,
+    // the daemon-helper must also exit promptly. Previously, process.exit() was
+    // gated on logStream.end() whose callback could never fire if the stream was
+    // destroyed/errored, leaving the daemon-helper alive as a zombie.
+    const scriptPath = join(TEST_PID_DIR, '_exit-fast.js');
+    writeFileSync(scriptPath, 'console.log("child-exiting"); process.exit(0);');
+
+    const result = await runCli([
+      '-n',
+      'test-daemon-zombie',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      scriptPath,
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Daemon started');
+
+    // Read the daemon-helper PID from the PID file
+    const pid = readPidFile('test-daemon-zombie');
+    expect(pid).not.toBeNull();
+
+    // The child exits immediately. The daemon-helper should follow within the
+    // 1-second safety timeout. Poll for process death with generous timeout.
+    const died = await waitForProcessDeath(pid!, 10000);
+    expect(died).toBe(true);
+
+    // Status should report stopped (not running)
+    const status = await runCli(['-s', 'test-daemon-zombie', '-d', TEST_PID_DIR]);
+    expect(status.code).toBe(1);
+    expect(status.stdout).toContain('stopped');
+  });
+
+  it('ensure mode restarts after daemon child exits', async () => {
+    // Verify the full user-facing scenario: a daemon's child exits, the
+    // daemon-helper exits (no zombie), and a subsequent --ensure invocation
+    // detects the dead process and starts a fresh instance.
+    const isWindows = process.platform === 'win32';
+    const exitScript = join(TEST_PID_DIR, '_ensure-exit.js');
+    writeFileSync(exitScript, 'console.log("first-run"); process.exit(0);');
+
+    // Start first daemon — child exits immediately
+    const result1 = await runCli([
+      '-n',
+      'test-daemon-ensure-restart',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      exitScript,
+    ]);
+    expect(result1.code).toBe(0);
+
+    const pid1 = readPidFile('test-daemon-ensure-restart');
+    expect(pid1).not.toBeNull();
+
+    // Wait for daemon-helper to exit
+    const died = await waitForProcessDeath(pid1!, 10000);
+    expect(died).toBe(true);
+
+    // Now use --ensure mode with a long-running command — should start fresh
+    const sleepCmd = isWindows ? 'ping' : 'sleep';
+    const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
+
+    const result2 = await runCli([
+      '-n',
+      'test-daemon-ensure-restart',
+      '-e',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(result2.code).toBe(0);
+    expect(result2.stdout).toContain('Daemon started');
+
+    // New PID should be different and alive
+    const pid2 = readPidFile('test-daemon-ensure-restart');
+    expect(pid2).not.toBeNull();
+    expect(pid2).not.toBe(pid1);
+
+    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+    expect(isProcessRunning(pid2!)).toBe(true);
+  });
 });
 
 describe('Foreground Log Capture', () => {

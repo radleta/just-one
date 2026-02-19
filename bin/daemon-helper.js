@@ -48,7 +48,16 @@ child.on('error', err => {
   if (exiting) return;
   exiting = true;
   logStream.write(`[just-one daemon] Failed to start: ${err.message}\n`);
-  logStream.end(() => process.exit(1));
+
+  // Safety: exit even if logStream.end() callback never fires (stream may be
+  // destroyed/errored, in which case the 'finish' event is never emitted).
+  const safetyTimer = setTimeout(() => process.exit(1), 1000);
+  safetyTimer.unref();
+
+  logStream.end(() => {
+    clearTimeout(safetyTimer);
+    process.exit(1);
+  });
 });
 
 // Use 'close' (not 'exit') to ensure all piped stdio data is flushed before
@@ -56,11 +65,19 @@ child.on('error', err => {
 child.on('close', (code, signal) => {
   if (exiting) return;
   exiting = true;
+
+  const exitCode = signal
+    ? 128 + (signal === 'SIGTERM' ? 15 : signal === 'SIGINT' ? 2 : 1)
+    : (code ?? 1);
+
+  // Safety: exit even if logStream.end() callback never fires (stream may be
+  // destroyed/errored, in which case the 'finish' event is never emitted).
+  const safetyTimer = setTimeout(() => process.exit(exitCode), 1000);
+  safetyTimer.unref();
+
   logStream.end(() => {
-    if (signal) {
-      process.exit(128 + (signal === 'SIGTERM' ? 15 : signal === 'SIGINT' ? 2 : 1));
-    }
-    process.exit(code ?? 1);
+    clearTimeout(safetyTimer);
+    process.exit(exitCode);
   });
 });
 
