@@ -205,6 +205,15 @@ async function waitForProcessDeath(pid: number, timeoutMs: number): Promise<bool
   return !isProcessRunning(pid);
 }
 
+// Helper to wait for a process to become alive with polling (avoids flaky fixed-delay waits)
+async function waitForProcessAlive(pid: number, timeoutMs: number = 10000): Promise<boolean> {
+  const start = Date.now();
+  while (!isProcessRunning(pid) && Date.now() - start < timeoutMs) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  return isProcessRunning(pid);
+}
+
 // Helper to poll for expected content in a file (avoids flaky fixed-delay waits)
 async function waitForFileContent(
   filePath: string,
@@ -398,20 +407,18 @@ describe('CLI E2E Tests', () => {
       // Start a process and wait for PID file (with early exit detection)
       const { child, pid } = await startProcessAndWait('test-kill');
 
-      // Give process time to fully start (longer on Windows)
-      await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
-      expect(isProcessRunning(pid)).toBe(true);
+      // Wait for process to be fully alive
+      const alive = await waitForProcessAlive(pid, isWindows ? 10000 : 5000);
+      expect(alive).toBe(true);
 
       // Kill it
       const result = await runCli(['-k', 'test-kill', '-d', TEST_PID_DIR]);
       expect(result.code).toBe(0);
       expect(result.stdout).toContain('killed');
 
-      // Wait a bit for process to die
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Verify it's dead
-      expect(isProcessRunning(pid)).toBe(false);
+      // Wait for process to die
+      const died = await waitForProcessDeath(pid, isWindows ? 10000 : 5000);
+      expect(died).toBe(true);
 
       // Cleanup
       child.kill();
@@ -463,11 +470,9 @@ describe('CLI E2E Tests', () => {
       const pid1 = readPidFile('test-replace');
       expect(pid1).not.toBeNull();
 
-      // Give it time to fully start (longer on Windows)
-      await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 1000));
-
-      // Verify process is running
-      expect(isProcessRunning(pid1!)).toBe(true);
+      // Wait for process to be fully alive
+      const alive1 = await waitForProcessAlive(pid1!, isWindows ? 10000 : 5000);
+      expect(alive1).toBe(true);
 
       // Second CLI invocation - should kill first and start new
       const { command: cmd2, args: args2 } = getCliSpawnArgs([
@@ -569,13 +574,10 @@ describe('CLI E2E Tests', () => {
 
     it('exits 0 for running process', async () => {
       const isWindows = process.platform === 'win32';
-      const child = startProcess('test-status');
+      const { child, pid } = await startProcessAndWait('test-status');
 
-      const pidCreated = await waitForPidFile('test-status');
-      expect(pidCreated).toBe(true);
-
-      // Give process time to fully start
-      await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+      const alive = await waitForProcessAlive(pid, isWindows ? 10000 : 5000);
+      expect(alive).toBe(true);
 
       const result = await runCli(['-s', 'test-status', '-d', TEST_PID_DIR]);
       expect(result.code).toBe(0);
@@ -622,18 +624,29 @@ describe('CLI E2E Tests', () => {
       const pid1 = readPidFile('test-ka1');
       const pid2 = readPidFile('test-ka2');
 
-      // Give processes time to fully start
-      await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+      // Wait for processes to be fully alive
+      if (pid1) {
+        const alive1 = await waitForProcessAlive(pid1, isWindows ? 10000 : 5000);
+        expect(alive1).toBe(true);
+      }
+      if (pid2) {
+        const alive2 = await waitForProcessAlive(pid2, isWindows ? 10000 : 5000);
+        expect(alive2).toBe(true);
+      }
 
       const result = await runCli(['-K', '-d', TEST_PID_DIR]);
       expect(result.code).toBe(0);
       expect(result.stdout).toContain('killed');
 
       // Wait for processes to die
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      if (pid1) expect(isProcessRunning(pid1)).toBe(false);
-      if (pid2) expect(isProcessRunning(pid2)).toBe(false);
+      if (pid1) {
+        const died1 = await waitForProcessDeath(pid1, isWindows ? 10000 : 5000);
+        expect(died1).toBe(true);
+      }
+      if (pid2) {
+        const died2 = await waitForProcessDeath(pid2, isWindows ? 10000 : 5000);
+        expect(died2).toBe(true);
+      }
 
       child1.kill();
       child2.kill();
@@ -670,8 +683,8 @@ describe('CLI E2E Tests', () => {
       const pid = readPidFile('test-ensure');
       expect(pid).not.toBeNull();
 
-      await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
-      expect(isProcessRunning(pid!)).toBe(true);
+      const alive = await waitForProcessAlive(pid!, isWindows ? 10000 : 5000);
+      expect(alive).toBe(true);
 
       child.kill();
       if (pid && isProcessRunning(pid)) {
@@ -711,7 +724,8 @@ describe('CLI E2E Tests', () => {
       const pid1 = readPidFile('test-ensure2');
       expect(pid1).not.toBeNull();
 
-      await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+      const alive = await waitForProcessAlive(pid1!, isWindows ? 10000 : 5000);
+      expect(alive).toBe(true);
 
       // Second invocation with --ensure should skip
       const result = await runCli([
@@ -768,12 +782,10 @@ describe('CLI E2E Tests', () => {
     it('keeps active PID files while removing stale ones', async () => {
       const isWindows = process.platform === 'win32';
 
-      // Start a real process
-      const child = startProcess('test-clean-active');
-      const pidCreated = await waitForPidFile('test-clean-active');
-      expect(pidCreated).toBe(true);
-
-      await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+      // Start a real process and wait for it to be alive
+      const { child, pid } = await startProcessAndWait('test-clean-active');
+      const alive = await waitForProcessAlive(pid, isWindows ? 10000 : 5000);
+      expect(alive).toBe(true);
 
       // Create a stale PID file
       const fs = await import('fs');
@@ -798,15 +810,10 @@ describe('CLI E2E Tests', () => {
 
     it('prints correct PID for running process', async () => {
       const isWindows = process.platform === 'win32';
-      const child = startProcess('test-pid-cmd');
+      const { child, pid: expectedPid } = await startProcessAndWait('test-pid-cmd');
 
-      const pidCreated = await waitForPidFile('test-pid-cmd');
-      expect(pidCreated).toBe(true);
-
-      const expectedPid = readPidFile('test-pid-cmd');
-      expect(expectedPid).not.toBeNull();
-
-      await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+      const alive = await waitForProcessAlive(expectedPid, isWindows ? 10000 : 5000);
+      expect(alive).toBe(true);
 
       const result = await runCli(['-p', 'test-pid-cmd', '-d', TEST_PID_DIR]);
       expect(result.code).toBe(0);
@@ -834,16 +841,10 @@ describe('CLI E2E Tests', () => {
     it('waits for a process and detects exit', async () => {
       const isWindows = process.platform === 'win32';
 
-      // Start a long-running process
-      const child = startProcess('test-wait-exit');
-      const pidCreated = await waitForPidFile('test-wait-exit');
-      expect(pidCreated).toBe(true);
-
-      const pid = readPidFile('test-wait-exit');
-      expect(pid).not.toBeNull();
-
-      // Give process time to fully start
-      await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+      // Start a long-running process and wait for it to be alive
+      const { child, pid } = await startProcessAndWait('test-wait-exit');
+      const alive = await waitForProcessAlive(pid, isWindows ? 10000 : 5000);
+      expect(alive).toBe(true);
 
       // Start wait in background, then kill the process
       const waitPromise = runCli(['-w', 'test-wait-exit', '-d', TEST_PID_DIR, '-t', '15']);
@@ -854,7 +855,7 @@ describe('CLI E2E Tests', () => {
         if (isWindows) {
           execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'pipe' });
         } else {
-          process.kill(pid!);
+          process.kill(pid);
         }
       } catch {
         /* may already be dead */
@@ -869,12 +870,10 @@ describe('CLI E2E Tests', () => {
 
     it('exits 1 on timeout', async () => {
       const isWindows = process.platform === 'win32';
-      const child = startProcess('test-wait-timeout');
+      const { child, pid } = await startProcessAndWait('test-wait-timeout');
 
-      const pidCreated = await waitForPidFile('test-wait-timeout');
-      expect(pidCreated).toBe(true);
-
-      await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+      const alive = await waitForProcessAlive(pid, isWindows ? 10000 : 5000);
+      expect(alive).toBe(true);
 
       // Wait with 1-second timeout - should time out
       const result = await runCli(['-w', 'test-wait-timeout', '-t', '1', '-d', TEST_PID_DIR]);
@@ -882,8 +881,7 @@ describe('CLI E2E Tests', () => {
       expect(result.stdout).toContain('Timeout');
 
       child.kill();
-      const pid = readPidFile('test-wait-timeout');
-      if (pid && isProcessRunning(pid)) {
+      if (isProcessRunning(pid)) {
         try {
           if (isWindows) {
             execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'pipe' });
@@ -899,17 +897,18 @@ describe('CLI E2E Tests', () => {
 });
 
 describe('Edge Cases', () => {
-  beforeEach(() => {
-    if (existsSync(TEST_PID_DIR)) {
-      rmSync(TEST_PID_DIR, { recursive: true, force: true });
-    }
+  beforeEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
     mkdirSync(TEST_PID_DIR, { recursive: true });
   });
 
-  afterEach(() => {
-    if (existsSync(TEST_PID_DIR)) {
-      rmSync(TEST_PID_DIR, { recursive: true, force: true });
+  afterEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    if (process.platform === 'win32') {
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
+    await cleanTestDir(TEST_PID_DIR);
   });
 
   it('handles names with hyphens and underscores', async () => {
@@ -979,17 +978,27 @@ describe('Edge Cases', () => {
     ]);
     const child = spawn(command, args, { stdio: 'pipe' });
 
-    // Wait for PID file to be updated
-    await new Promise(resolve => setTimeout(resolve, isWindows ? 3000 : 1000));
+    // Wait for PID file to exist, then poll until PID changes from orphaned value
+    const pidFileCreated = await waitForPidFile('orphaned');
+    expect(pidFileCreated).toBe(true);
 
-    const pid = readPidFile('orphaned');
+    const timeout = isWindows ? 15000 : 10000;
+    const start = Date.now();
+    let pid: number | null = null;
+    while (Date.now() - start < timeout) {
+      const candidate = readPidFile('orphaned');
+      if (candidate && candidate !== 999999999) {
+        pid = candidate;
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
     expect(pid).not.toBeNull();
-    // New PID should be different from the orphaned one
     expect(pid).not.toBe(999999999);
 
-    // Give process more time to stabilize on Windows
-    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
-    expect(isProcessRunning(pid!)).toBe(true);
+    // Wait for the new process to be alive
+    const alive = await waitForProcessAlive(pid!, isWindows ? 10000 : 5000);
+    expect(alive).toBe(true);
 
     // Cleanup
     child.kill();
@@ -1052,8 +1061,8 @@ describe('Daemon Mode', () => {
     const pid = readPidFile('test-daemon');
     expect(pid).not.toBeNull();
 
-    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
-    expect(isProcessRunning(pid!)).toBe(true);
+    const alive = await waitForProcessAlive(pid!, isWindows ? 10000 : 5000);
+    expect(alive).toBe(true);
   });
 
   it('captures stdout to log file', async () => {
@@ -1168,8 +1177,8 @@ describe('Daemon Mode', () => {
 
     const pid1 = readPidFile('test-daemon-replace');
     expect(pid1).not.toBeNull();
-    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
-    expect(isProcessRunning(pid1!)).toBe(true);
+    const alive1 = await waitForProcessAlive(pid1!, isWindows ? 10000 : 5000);
+    expect(alive1).toBe(true);
 
     // Start second daemon with same name
     const result2 = await runCli([
@@ -1322,8 +1331,8 @@ describe('Daemon Mode', () => {
     expect(pid2).not.toBeNull();
     expect(pid2).not.toBe(pid1);
 
-    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
-    expect(isProcessRunning(pid2!)).toBe(true);
+    const alive2 = await waitForProcessAlive(pid2!, isWindows ? 10000 : 5000);
+    expect(alive2).toBe(true);
   });
 });
 
@@ -1738,7 +1747,8 @@ describe('PID Command with Quiet Mode', () => {
     const expectedPid = readPidFile('test-pid-quiet');
     expect(expectedPid).not.toBeNull();
 
-    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+    const alive = await waitForProcessAlive(expectedPid!, isWindows ? 10000 : 5000);
+    expect(alive).toBe(true);
 
     // Get PID with quiet mode - should still output the PID
     const result = await runCli(['-p', 'test-pid-quiet', '-q', '-d', TEST_PID_DIR]);
@@ -1873,9 +1883,9 @@ describe('Exit Code Regression (Windows fix)', () => {
     const pid = readPidFile('test-exitcode-kill');
     expect(pid).not.toBeNull();
 
-    // Give process time to fully start
-    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
-    expect(isProcessRunning(pid!)).toBe(true);
+    // Wait for process to be fully alive
+    const alive = await waitForProcessAlive(pid!, isWindows ? 10000 : 5000);
+    expect(alive).toBe(true);
 
     // Kill via poisoned wrapper — should still exit 0
     const killResult = await runCliWithPoisonedExitCode([
