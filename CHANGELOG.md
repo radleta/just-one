@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [1.4.1](https://github.com/radleta/just-one/compare/v1.4.0...v1.4.1) (2026-02-19)
+
+### Bug Fixes
+
+- explicitly pass env to daemon spawn calls for environment inheritance ([dea8b0e](https://github.com/radleta/just-one/commit/dea8b0e7784a9bc7d4444cbab185d388750342d7))
+- return exit code 1 when killing a non-existent process ([caf4b2a](https://github.com/radleta/just-one/commit/caf4b2ace7666dec39b43e03ce17352b88d0e0d1))
+- **windows:** always call process.exit(code) to prevent exit code pollution ([039706c](https://github.com/radleta/just-one/commit/039706c658761625d1d28cd5fa765566f722e0a0))
+- **windows:** resolve .cmd wrapper commands in daemon mode ([40d48cb](https://github.com/radleta/just-one/commit/40d48cb83b7514e7ec7686891975a222bc03e9f8)), closes [radleta/just-one#8](https://github.com/radleta/just-one/issues/8)
+- **windows:** separate CLI entry point from library export to prevent ESM dual-loading ([27c05a1](https://github.com/radleta/just-one/commit/27c05a15af34004bea4ebf2440410670d60f8616))
+
 ## [1.4.0](https://github.com/radleta/just-one/compare/v1.3.1...v1.4.0) (2026-02-12)
 
 ### Features
