@@ -13,7 +13,7 @@ import { join } from 'path';
 //   JUST_ONE_NPX=1 npm test                    # uses npx @radleta/just-one
 //   JUST_ONE_NPX=1 JUST_ONE_CLI=@radleta/just-one@1.0.0 npm test  # specific version
 const USE_NPX = process.env.JUST_ONE_NPX === '1';
-const CLI_PATH = process.env.JUST_ONE_CLI || join(__dirname, '../../dist/index.js');
+const CLI_PATH = process.env.JUST_ONE_CLI || join(__dirname, '../../dist/cli.js');
 const TEST_PID_DIR = join(__dirname, '../../.test-pids');
 
 // Get spawn command and args based on configuration
@@ -373,10 +373,23 @@ describe('CLI E2E Tests', () => {
   });
 
   describe('Kill Command', () => {
-    it('handles killing non-existent process gracefully', async () => {
+    it('exits 1 when killing non-existent process', async () => {
       const result = await runCli(['-k', 'nonexistent', '-d', TEST_PID_DIR]);
-      expect(result.code).toBe(0);
+      expect(result.code).toBe(1);
       expect(result.stdout).toContain('No process found');
+    });
+
+    it('exits 0 when killing stale PID (process not running)', async () => {
+      // Create orphaned PID file with non-existent PID
+      const fs = await import('fs');
+      fs.writeFileSync(join(TEST_PID_DIR, 'stale-kill.pid'), '999999999', 'utf8');
+
+      const result = await runCli(['-k', 'stale-kill', '-d', TEST_PID_DIR]);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain('not running');
+
+      // PID file should be cleaned up
+      expect(existsSync(join(TEST_PID_DIR, 'stale-kill.pid'))).toBe(false);
     });
 
     it('kills a running process', async () => {
@@ -524,7 +537,7 @@ describe('CLI E2E Tests', () => {
 
     it('suppresses output in quiet mode for kill', async () => {
       const result = await runCli(['-k', 'nonexistent', '-q', '-d', TEST_PID_DIR]);
-      expect(result.code).toBe(0);
+      expect(result.code).toBe(1);
       expect(result.stdout).toBe('');
     });
   });
@@ -1068,6 +1081,73 @@ describe('Daemon Mode', () => {
     expect(logContent).toContain('second line');
   });
 
+  it('daemon inherits caller environment variables', async () => {
+    // Verify environment flows through the full CLI -> daemon chain.
+    // On Windows this exercises the daemon-helper.js wrapper; on Unix the direct spawn.
+    const envKey = 'JUST_ONE_E2E_ENV_TEST';
+    const envVal = 'e2e-env-' + Date.now();
+
+    const scriptPath = join(TEST_PID_DIR, '_env-e2e.js');
+    writeFileSync(scriptPath, `console.log(process.env['${envKey}'] || 'NOT_SET')`);
+
+    const { command, args } = getCliSpawnArgs([
+      '-n',
+      'test-daemon-env',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      'node',
+      scriptPath,
+    ]);
+
+    // Spawn with the custom env var set
+    const child = spawn(command, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, [envKey]: envVal },
+    });
+
+    const result = await new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
+      let stdout = '';
+      let stderr = '';
+      child.stdout?.on('data', (d: Buffer) => {
+        stdout += d.toString();
+      });
+      child.stderr?.on('data', (d: Buffer) => {
+        stderr += d.toString();
+      });
+      child.on('close', code => resolve({ code: code ?? 1, stdout, stderr }));
+    });
+
+    expect(result.code).toBe(0);
+
+    // Poll daemon log for the env var value
+    const logPath = join(TEST_PID_DIR, 'test-daemon-env.log');
+    const logContent = await waitForFileContent(logPath, envVal, 5000);
+    expect(logContent).not.toContain('NOT_SET');
+    expect(logContent).toContain(envVal);
+  });
+
+  it('daemon mode resolves .cmd wrappers on Windows', async () => {
+    if (process.platform !== 'win32') return; // .cmd wrappers are Windows-only
+
+    // Create a node script that the .cmd wrapper will execute
+    const scriptPath = join(TEST_PID_DIR, '_cmd-target.js');
+    writeFileSync(scriptPath, 'console.log("cmd-wrapper-works");');
+
+    // Create a .cmd wrapper (same pattern npm generates for bin entries)
+    const cmdPath = join(TEST_PID_DIR, '_cmd-test.cmd');
+    writeFileSync(cmdPath, `@node "${scriptPath}" %*\r\n`);
+
+    const result = await runCli(['-n', 'test-daemon-cmd', '-D', '-d', TEST_PID_DIR, '--', cmdPath]);
+
+    expect(result.code).toBe(0);
+
+    const logPath = join(TEST_PID_DIR, 'test-daemon-cmd.log');
+    const logContent = await waitForFileContent(logPath, 'cmd-wrapper-works');
+    expect(logContent).toContain('cmd-wrapper-works');
+  });
+
   it('replaces existing daemon (kills first, starts second)', async () => {
     const isWindows = process.platform === 'win32';
     const sleepCmd = isWindows ? 'ping' : 'sleep';
@@ -1572,6 +1652,153 @@ describe('PID Command with Quiet Mode', () => {
     const result = await runCli(['-p', 'test-pid-quiet', '-q', '-d', TEST_PID_DIR]);
     expect(result.code).toBe(0);
     expect(result.stdout.trim()).toBe(String(expectedPid));
+  });
+});
+
+describe('Exit Code Regression (Windows fix)', () => {
+  // Regression tests for the Windows exit code bug where all commands exited 1.
+  // Root cause: cli.ts relied on natural exit for code 0, but environment factors
+  // (e.g. pidusage DEP0190 warning) could set process.exitCode = 1 before natural exit.
+  // Fix: cli.ts now always calls process.exit(code) explicitly.
+  //
+  // These tests poison process.exitCode = 1 BEFORE cli.js runs, proving that
+  // the explicit process.exit(code) call overrides it. Without the fix, these fail.
+
+  const WRAPPER_PATH = join(TEST_PID_DIR, 'exitcode-wrapper.mjs');
+
+  /** Run CLI through a wrapper that sets process.exitCode = 1 before importing cli.js */
+  function runCliWithPoisonedExitCode(
+    args: string[]
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
+    return new Promise(resolve => {
+      const child = spawn('node', [WRAPPER_PATH, ...args], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout?.on('data', (data: Buffer) => {
+        stdout += data.toString();
+      });
+
+      child.stderr?.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      child.on('close', code => {
+        resolve({ code: code ?? 1, stdout, stderr });
+      });
+
+      child.on('error', err => {
+        resolve({ code: 1, stdout, stderr: err.message });
+      });
+    });
+  }
+
+  beforeEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+    mkdirSync(TEST_PID_DIR, { recursive: true });
+
+    // Write a wrapper that poisons process.exitCode before running the CLI.
+    // On Windows, forward-slash paths work in ESM import URLs.
+    const cliAbsPath = join(__dirname, '../../dist/cli.js').replace(/\\/g, '/');
+    writeFileSync(
+      WRAPPER_PATH,
+      [
+        '// Simulate environment pollution (e.g. DEP0190 setting exitCode)',
+        'process.exitCode = 1;',
+        `import('file:///${cliAbsPath}');`,
+      ].join('\n')
+    );
+  });
+
+  afterEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+  });
+
+  it('--version exits 0 even when process.exitCode is polluted', async () => {
+    const result = await runCliWithPoisonedExitCode(['--version']);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/\d+\.\d+\.\d+/);
+  });
+
+  it('--help exits 0 even when process.exitCode is polluted', async () => {
+    const result = await runCliWithPoisonedExitCode(['--help']);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Usage:');
+  });
+
+  it('-l exits 0 even when process.exitCode is polluted', async () => {
+    const result = await runCliWithPoisonedExitCode(['-l', '-d', TEST_PID_DIR]);
+    expect(result.code).toBe(0);
+  });
+
+  it('error cases still exit 1 when process.exitCode is polluted', async () => {
+    const result = await runCliWithPoisonedExitCode(['-s', 'nonexistent', '-d', TEST_PID_DIR]);
+    expect(result.code).toBe(1);
+  });
+
+  it('daemon mode exits 0 even when process.exitCode is polluted', async () => {
+    const isWindows = process.platform === 'win32';
+    const sleepCmd = isWindows ? 'ping' : 'sleep';
+    const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
+
+    const result = await runCliWithPoisonedExitCode([
+      '-n',
+      'test-exitcode',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Daemon started');
+  });
+
+  it('kill exits 0 even when process.exitCode is polluted', async () => {
+    const isWindows = process.platform === 'win32';
+    const sleepCmd = isWindows ? 'ping' : 'sleep';
+    const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
+
+    // Start a daemon first (via normal CLI, not poisoned)
+    const startResult = await runCli([
+      '-n',
+      'test-exitcode-kill',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(startResult.code).toBe(0);
+
+    const pid = readPidFile('test-exitcode-kill');
+    expect(pid).not.toBeNull();
+
+    // Give process time to fully start
+    await new Promise(resolve => setTimeout(resolve, isWindows ? 2000 : 500));
+    expect(isProcessRunning(pid!)).toBe(true);
+
+    // Kill via poisoned wrapper — should still exit 0
+    const killResult = await runCliWithPoisonedExitCode([
+      '-k',
+      'test-exitcode-kill',
+      '-d',
+      TEST_PID_DIR,
+    ]);
+    expect(killResult.code).toBe(0);
+    expect(killResult.stdout).toContain('killed');
+  });
+
+  it('kill of unknown exits 1 even when process.exitCode is polluted', async () => {
+    const result = await runCliWithPoisonedExitCode(['-k', 'nonexistent', '-d', TEST_PID_DIR]);
+    expect(result.code).toBe(1);
   });
 });
 

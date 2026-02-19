@@ -1,6 +1,8 @@
-#!/usr/bin/env node
 /**
  * just-one - Ensure only one instance of a command runs at a time
+ *
+ * This module exports main() as a pure library function with no side effects.
+ * The CLI entry point (src/cli.ts) imports and calls main().
  */
 
 import { createRequire } from 'module';
@@ -43,7 +45,7 @@ async function handleKill(name: string, options: CliOptions): Promise<number> {
 
   if (pid === null) {
     log(`No process found with name: ${name}`, options);
-    return 0;
+    return 1;
   }
 
   // Verify this is the same process we originally started (prevents killing
@@ -177,9 +179,9 @@ async function handleRun(options: CliOptions): Promise<number> {
     // to find and kill any orphaned processes.
     setupSignalHandlers(child, undefined, !!logPath);
 
-    // The process will keep running until it exits or is killed
-    // The exit handler in setupSignalHandlers will call process.exit
-    return 0;
+    // Keep the process alive until the child exits or is killed.
+    // setupSignalHandlers' child.on('exit') handler will call process.exit().
+    return new Promise<number>(() => {});
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logError(`Failed to start process: ${message}`);
@@ -494,19 +496,4 @@ async function main(): Promise<number> {
   return await handleRun(options);
 }
 
-// Run the CLI
-main()
-  .then(code => {
-    // Only exit if we're not running a child process
-    // The child process exit handler will call process.exit
-    if (code !== 0) {
-      process.exit(code);
-    }
-  })
-  .catch(err => {
-    console.error('Unexpected error:', err);
-    process.exit(1);
-  });
-
-// Export for testing
 export { main };

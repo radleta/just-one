@@ -19,7 +19,8 @@
 
 **Source files** (`src/`):
 
-- `index.ts` - CLI entry point and main handler logic (handleRun, handleKill, handleList, handleStatus, handleKillAll, handleClean, handlePid, handleWait, handleLogs)
+- `index.ts` - Main handler logic and pure library export (handleRun, handleKill, handleList, handleStatus, handleKillAll, handleClean, handlePid, handleWait, handleLogs)
+- `cli.ts` - CLI entry point (imports `main()` from index.ts, calls it, handles process exit)
 - `lib/cli.ts` - Command-line argument parsing and validation
 - `lib/process.ts` - Process spawn/kill/management logic (CRITICAL - see safety section)
 - `lib/pid.ts` - PID file read/write/delete/list operations
@@ -38,15 +39,17 @@
 - **Pure function extraction** - Business logic in `lib/*.ts` (testable without mocking)
 - **Cross-platform** - Windows uses `taskkill`, Unix uses `process.kill()`
 - **PID validation** - All PIDs validated before shell interpolation
-- **Log capture** - Both modes write to `.log` files; foreground tees via piped streams, daemon uses fd-based stdio
-- **Daemon mode** - Detached process with `stdio: ['ignore', logFd, logFd]`
+- **Log capture** - Both modes write to `.log` files; foreground tees via piped streams, daemon uses fd-based stdio (Unix) or piped-via-helper (Windows)
+- **Daemon mode** - Unix: detached process with `stdio: ['ignore', logFd, logFd]`; Windows: detached `daemon-helper.js` wrapper with `shell: true` + piped stdio (resolves `.cmd` wrappers)
 - **Log rotation** - Automatic at spawn time when >10MB (keeps 1 backup as `.log.1`)
 
 **Build output:**
 
-- `dist/index.js` - ESM bundle (main entry)
+- `dist/cli.js` - CLI entry point (calls `main()`, handles exit)
+- `dist/index.js` - Library export (pure, no side effects)
 - `dist/index.d.ts` - TypeScript declarations
-- `bin/just-one.js` - Shebang wrapper
+- `bin/just-one.js` - Shebang wrapper (imports `dist/cli.js`)
+- `bin/daemon-helper.js` - Windows daemon mode wrapper (spawned by `spawnCommandDaemon`)
 
 ## CRITICAL: Process Killing Safety Guidelines
 
@@ -230,9 +233,10 @@ npm run release:major    # Force major version bump
 **IMPORTANT: Daemon mode spawn on Windows:**
 
 - **NEVER** use `shell: true` + `detached: true` with fd-based stdio — `cmd.exe` doesn't pass inherited file descriptors to grandchild processes (known Node.js issue). Log files will be created but stay empty.
+- **Daemon mode uses a helper wrapper** (`bin/daemon-helper.js`): the parent spawns `node daemon-helper.js <logPath> <command> <args>` with `detached: true, stdio: 'ignore', env: process.env`. The helper then spawns the real command with `shell: true` + piped stdio + `env: process.env`, piping output to the log file. This resolves `.cmd` wrappers (every npm binary on Windows) while avoiding the fd-based stdio limitation.
+- **Environment inheritance** — All daemon spawn calls (both platforms) explicitly pass `env: process.env` to ensure the detached child inherits the caller's full environment (PATH, custom vars, etc.). Without this, commands that depend on PATH augmentation (npm scripts, nvm, pyenv, venv) may fail in daemon mode.
 - Foreground mode (`spawnCommand`) can use `shell: true` because it uses piped stdio (not fd-based) and `detached: false` on Windows.
 - **Foreground piped stdio + Windows signals:** With `stdio: ['inherit', 'pipe', 'pipe']`, stdin is inherited but stdout/stderr are piped. `CTRL_C_EVENT` may not be delivered to the child, so `setupSignalHandlers` explicitly sends `SIGTERM` when `pipedStdio=true`.
-- `spawn()` with `shell: false` still finds executables in PATH via `CreateProcess` on Windows.
 
 ## PID Reuse Protection
 
@@ -249,7 +253,8 @@ If these don't match within 5 seconds, the PID was likely reused by an unrelated
 - **Process not killed on Windows** - Ensure using `/T` flag to kill tree
 - **Orphaned PID file** - Normal behavior; next run will detect and handle
 - **E2E tests flaky on Windows** - Increase timeouts (Windows process ops are slower)
-- **Windows daemon tests: empty logs** - Caused by `shell: true` + `detached: true` with fd stdio (see Cross-Platform Notes)
+- **Daemon loses caller's environment (PATH, etc.)** - Was caused by daemon spawn calls not explicitly passing `env: process.env`; now fixed — all daemon spawn paths (both platforms + daemon-helper.js) explicitly inherit the caller's environment
+- **Windows daemon tests: empty logs** - Was caused by `shell: true` + `detached: true` with fd stdio; now fixed via daemon-helper.js wrapper (see Cross-Platform Notes)
 - **Windows file locking in test cleanup** - Kill tracked daemon processes before `rmSync`; use retry logic for directory removal
 - **Windows `cmd.exe` quoting** - Avoid `node -e 'console.log("...")'` in tests; write helper `.js` scripts to disk instead
 - **`fs.watchFile` unreliable on CI** - Use `setInterval` + `statSync` polling instead (libuv may skip poll intervals under load)
