@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [1.4.2](https://github.com/radleta/just-one/compare/v1.4.1...v1.4.2) (2026-02-20)
+
+### Bug Fixes
+
+- **daemon-helper:** prevent zombie process when logStream.end() callback never fires ([98a9516](https://github.com/radleta/just-one/commit/98a9516eea68f9dbf8201f99be635c5b67cf970e))
+- **e2e:** replace hard-coded delays with polling helpers to fix flaky tests ([1304e43](https://github.com/radleta/just-one/commit/1304e4371f48098f616d67ca687c27cddec96227))
+
 ### [1.4.1](https://github.com/radleta/just-one/compare/v1.4.0...v1.4.1) (2026-02-19)
 
 ### Bug Fixes
