@@ -1916,7 +1916,8 @@ describe('Exit Code Regression (Windows fix)', () => {
 const describeLinux = process.platform === 'linux' ? describe : describe.skip;
 
 describeLinux('Start Ticks Identity (WSL2 clock drift)', () => {
-  const sleepArgs = ['sleep', '60'];
+  const sleepCmd = 'sleep';
+  const sleepArgs = ['60'];
 
   // Push the PID file's mtime into the past, reproducing what a WSL2 host
   // suspend does: /proc/uptime freezes while the wall clock keeps running, so
@@ -1939,7 +1940,16 @@ describeLinux('Start Ticks Identity (WSL2 clock drift)', () => {
   });
 
   it('records start ticks in the PID file on spawn', async () => {
-    const result = await runCli(['-n', 'test-ticks', '-D', '-d', TEST_PID_DIR, '--', ...sleepArgs]);
+    const result = await runCli([
+      '-n',
+      'test-ticks',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
     expect(result.code).toBe(0);
 
     const content = readFileSync(join(TEST_PID_DIR, 'test-ticks.pid'), 'utf8');
@@ -1956,6 +1966,7 @@ describeLinux('Start Ticks Identity (WSL2 clock drift)', () => {
       '-d',
       TEST_PID_DIR,
       '--',
+      sleepCmd,
       ...sleepArgs,
     ]);
     expect(started.code).toBe(0);
@@ -1978,6 +1989,7 @@ describeLinux('Start Ticks Identity (WSL2 clock drift)', () => {
       '-d',
       TEST_PID_DIR,
       '--',
+      sleepCmd,
       ...sleepArgs,
     ]);
     expect(started.code).toBe(0);
@@ -1995,6 +2007,7 @@ describeLinux('Start Ticks Identity (WSL2 clock drift)', () => {
       '-d',
       TEST_PID_DIR,
       '--',
+      sleepCmd,
       ...sleepArgs,
     ]);
 
@@ -2013,6 +2026,7 @@ describeLinux('Start Ticks Identity (WSL2 clock drift)', () => {
       '-d',
       TEST_PID_DIR,
       '--',
+      sleepCmd,
       ...sleepArgs,
     ]);
     expect(started.code).toBe(0);
@@ -2022,15 +2036,14 @@ describeLinux('Start Ticks Identity (WSL2 clock drift)', () => {
     // Rewrite as a file an older version would have produced: bare PID, no ticks
     const pidFile = join(TEST_PID_DIR, 'test-backfill.pid');
     writeFileSync(pidFile, String(pid), 'utf8');
-    const { atimeMs, mtimeMs } = statSync(pidFile);
-    utimesSync(pidFile, atimeMs / 1000, mtimeMs / 1000);
+    const { mtimeMs } = statSync(pidFile);
 
     const status = await runCli(['-s', 'test-backfill', '-d', TEST_PID_DIR]);
     expect(status.code).toBe(0);
 
     // Ticks are now recorded, and the mtime older versions rely on is unchanged
     expect(readFileSync(pidFile, 'utf8')).toMatch(/^\d+\nstartTicks=\d+$/);
-    expect(statSync(pidFile).mtimeMs).toBeCloseTo(mtimeMs, 0);
+    expect(statSync(pidFile).mtimeMs).toBe(mtimeMs);
 
     // Having been upgraded, it now survives the drift that would have broken it
     simulateClockDrift('test-backfill', 4);

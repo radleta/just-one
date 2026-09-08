@@ -90,7 +90,7 @@ Running `taskkill /IM node.exe /F` will kill EVERY node process on the machine, 
 
 1. **Always get PID from a trusted source** (PID file, spawn result)
 2. **Validate PID before killing** (use `isValidPid()` from `process.ts`)
-3. **Verify process identity** (use `isSameProcessInstance()` to check start time matches)
+3. **Verify process identity** (use `isSameProcessInstance()` — exact start-tick match on Linux, start-time comparison elsewhere)
 4. **Use project's built-in mechanisms** (`just-one -k <name>`)
 5. **In tests, store PIDs when spawning** and clean up using those specific PIDs
 

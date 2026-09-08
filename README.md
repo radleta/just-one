@@ -238,7 +238,7 @@ just-one -n storybook -d /tmp -- npx storybook dev
 ```
 
 1. Check if a PID file exists for that name
-2. If yes, verify it's the same process we started (by comparing start times)
+2. If yes, verify it's the same process we started (see PID Reuse Protection below)
 3. If verified, send SIGTERM and wait up to 5 seconds (configurable with `--grace`)
 4. If still alive, escalate to SIGKILL (force kill)
 5. Start the new process

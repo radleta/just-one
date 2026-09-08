@@ -234,10 +234,7 @@ describe('PID operations', () => {
       mkdirSync(TEST_DIR, { recursive: true });
       writeFileSync(join(TEST_DIR, 'legacy.pid'), '12345', 'utf8');
 
-      expect(readPidRecord('legacy.pid'.slice(0, -4), TEST_DIR)).toEqual({
-        pid: 12345,
-        startTicks: null,
-      });
+      expect(readPidRecord('legacy', TEST_DIR)).toEqual({ pid: 12345, startTicks: null });
     });
 
     it('omits start ticks when none are supplied', () => {
