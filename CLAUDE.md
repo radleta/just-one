@@ -90,7 +90,7 @@ Running `taskkill /IM node.exe /F` will kill EVERY node process on the machine, 
 
 1. **Always get PID from a trusted source** (PID file, spawn result)
 2. **Validate PID before killing** (use `isValidPid()` from `process.ts`)
-3. **Verify process identity** (use `isSameProcessInstance()` — exact start-tick match on Linux, start-time comparison elsewhere)
+3. **Verify process identity** (use `isSameProcessInstance()` — exact start-tick match on Linux, exact start-time match on Windows, mtime comparison elsewhere)
 4. **Use project's built-in mechanisms** (`just-one -k <name>`)
 5. **In tests, store PIDs when spawning** and clean up using those specific PIDs
 
@@ -105,7 +105,7 @@ The safe implementation is in `src/lib/process.ts`:
 - `isValidPid(pid)` - Validates PID range 1-4194304
 - `getProcessStartTime(pid)` - Gets process start time via pidusage
 - `getProcessStartTicks(pid)` - Gets start ticks from `/proc/<pid>/stat` (Linux only, null elsewhere)
-- `isSameProcessInstance(pid, mtime, startTicks?)` - Verifies process identity; exact tick match when `startTicks` is recorded, mtime comparison otherwise
+- `isSameProcessInstance(pid, mtime, evidence?)` - Verifies process identity, returning `{ same, basis, deltaMs? }` rather than a bare boolean. `basis` is `'ticks' | 'startTime' | 'mtime'`; `deltaMs` appears only on an mtime rejection. Never infer identity from `basis` — `same` is the decision
 
 ## Development Workflow
 
@@ -245,15 +245,25 @@ The tool verifies process identity before killing it, so a recycled PID belongin
 
 **Linux (preferred):** `writePid` records the process's start ticks (field 22 of `/proc/<pid>/stat`) in the PID file next to the PID, and `isSameProcessInstance` compares them exactly. Ticks count from boot, so they are immune to wall-clock jumps.
 
-**Windows/macOS, and legacy bare-PID files:** falls back to comparing the PID file's mtime against the process start time from pidusage, with a 5 s tolerance.
+**Windows:** `startTime=` records pidusage's start time in integer milliseconds, compared exactly. On Windows that value reduces to the OS-reported `creation.getTime()`, measured stable across repeated reads and identical between the `wmic` and `gwmi` backends, so an exact comparison is safe on either.
 
-The fallback is unreliable wherever the wall clock and the uptime clock diverge. On WSL2 a host suspend freezes `/proc/uptime` while the wall clock keeps running, so pidusage's `timestamp - elapsed` drifts hours later than the real start and every live daemon reads as foreign — `-e` spawns duplicates, `-k`/`-s` refuse the daemon they started. The recorded ticks exist to close that hole.
+**macOS/BSD, and legacy bare-PID files:** falls back to comparing the PID file's mtime against the process start time from pidusage, with a 5 s tolerance. macOS stays on the fallback deliberately — pidusage's `ps` backend parses `etime` at whole-second resolution, so no exact comparison is possible there without native code.
 
-**PID file format:** first line is the PID; optional following lines are `key=value` (currently only `startTicks=`). `readPidRecord` parses both this and the legacy bare-PID form, tolerates CRLF, ignores unknown keys, and treats a non-numeric `startTicks=` as absent.
+The fallback is unreliable wherever the wall clock and the uptime clock diverge. On WSL2 a host suspend freezes `/proc/uptime` while the wall clock keeps running, so pidusage's `timestamp - elapsed` drifts hours later than the real start and every live daemon reads as foreign — `-e` spawns duplicates, `-k`/`-s` refuse the daemon they started. The recorded evidence exists to close that hole.
 
-**Backfill:** when a legacy bare-PID file verifies successfully, `backfillStartTicks` records the ticks in place so later checks use the exact comparison — a process started by an older version becomes drift-proof without a restart. It only fires on paths where the PID file survives (`-s`, `-pid`, and the `-e` skip branch), never right before a kill. `updateStartTicks` restores the file's mtime via `utimesSync` afterwards: an older just-one sharing the same PID dir still verifies by mtime, and bumping it would make live processes look stale to that version. Pass float seconds, not `Date` objects — `Date` truncates to whole milliseconds.
+**PID file format:** first line is the PID; optional following lines are `key=value`. Two evidence keys are defined — `startTicks=` (Linux) and `startTime=` (Windows) — and at most one is written per file. `readPidRecord` parses both this and the legacy bare-PID form, tolerates CRLF, ignores unknown keys, and treats a non-numeric value as absent.
 
-**Compatibility, both directions (verified against a real 1.4.2 build):** an old version reads a new file correctly, because its `parseInt` stops at the newline; a new version reads a legacy file and falls back to the mtime path. A shared PID dir with mixed versions is safe.
+**Rejection diagnostics:** the three rejection messages (`handleKill`, `handleRun`'s stale-PID branch, `handleStatus`) compose from the verdict via `describeRejection` in `index.ts`. An evidence rejection says the recorded start does not match; an mtime rejection reports the measured delta and deliberately does **not** claim a different process, because it cannot establish one — a multi-hour delta is the WSL2 clock signature.
+
+**Evidence recording:** when a legacy bare-PID file verifies successfully, `recordIdentityEvidence` (async) records ticks on Linux or the pidusage start time on Windows, in place, so later checks use the exact comparison — a process started by an older version becomes drift-proof without a restart. It no-ops on every other platform. It only fires on paths where the PID file survives (`-s`, `-pid`, and the `-e` skip branch), never right before a kill. Recording is lazy by design: reading the start time on Windows costs a `wmic`/PowerShell subprocess, which must stay off the spawn path `-e` runs every invocation.
+
+`writeIdentityEvidence` restores the file's mtime via `utimesSync` afterwards: an older just-one sharing the same PID dir still verifies by mtime, and bumping it would make live processes look stale to that version. Pass float seconds, not `Date` objects — `Date` truncates to whole milliseconds.
+
+**Atomic writes:** `writePid` writes to a `.tmp` sibling and `renameSync`s it into place, so a concurrent reader — an older just-one included — never `parseInt`s a truncated first line. The mtime restoration runs on the final path, after the rename.
+
+**Compatibility, both directions (verified against a real 1.4.2 install):** an old version reads a new file correctly, because its `parseInt` stops at the newline; a new version reads a legacy file and falls back to the mtime path. A shared PID dir with mixed versions is safe.
+
+**Do not prove cross-version compatibility with `JUST_ONE_NPX=1 JUST_ONE_CLI=@radleta/just-one@<v> npx vitest run src/e2e/`.** When `<v>` equals the version in the local `package.json`, npx resolves the workspace build and the run silently tests the current code against itself — it passed 79/79 while the published 1.4.2 actually fails 6 of them. Install the published tarball into a temp dir and point `JUST_ONE_CLI` at its `bin/just-one.js` by absolute path instead. `npm run test:npm` has a related defect: it assigns `JUST_ONE_CLI` inline, overriding any inherited value and testing `latest`.
 
 ## Common Issues
 

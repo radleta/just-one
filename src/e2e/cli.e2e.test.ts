@@ -1953,6 +1953,7 @@ describeLinux('Start Ticks Identity (WSL2 clock drift)', () => {
     expect(result.code).toBe(0);
 
     const content = readFileSync(join(TEST_PID_DIR, 'test-ticks.pid'), 'utf8');
+    // Ticks only — the startTime key is for platforms that cannot supply ticks
     expect(content).toMatch(/^\d+\nstartTicks=\d+$/);
     // Older versions parseInt the whole file, which stops at the newline
     expect(parseInt(content, 10)).toBe(readPidFile('test-ticks'));
@@ -2050,6 +2051,81 @@ describeLinux('Start Ticks Identity (WSL2 clock drift)', () => {
     const after = await runCli(['-s', 'test-backfill', '-d', TEST_PID_DIR]);
     expect(after.code).toBe(0);
     expect(after.stdout).toContain('running');
+  });
+});
+
+// A rejection has to say what it rejected on. An exact-evidence mismatch is
+// definite; an mtime mismatch is only two clocks disagreeing, and reads as the
+// WSL2 drift signature rather than as PID reuse.
+describe('Rejection Diagnostics', () => {
+  const isWindows = process.platform === 'win32';
+  const sleepCmd = isWindows ? 'ping' : 'sleep';
+  const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
+
+  beforeEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+    mkdirSync(TEST_PID_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+  });
+
+  async function startDaemon(name: string): Promise<number> {
+    const started = await runCli([
+      '-n',
+      name,
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(started.code).toBe(0);
+    const pid = readPidFile(name);
+    expect(pid).not.toBeNull();
+    expect(await waitForProcessAlive(pid!, 5000)).toBe(true);
+    return pid!;
+  }
+
+  it('names recorded evidence as the basis when a start time does not match', async () => {
+    const pid = await startDaemon('test-reject-evidence');
+
+    // A start time no live process can have — the exact comparison must reject it
+    writeFileSync(join(TEST_PID_DIR, 'test-reject-evidence.pid'), `${pid}\nstartTime=1`, 'utf8');
+
+    const status = await runCli(['-s', 'test-reject-evidence', '-d', TEST_PID_DIR]);
+    expect(status.code).toBe(1);
+    expect(status.stdout).toContain('recorded start does not match');
+    expect(status.stdout).toContain('belongs to a different process');
+  });
+
+  it('reports an unverified result with the measured delta on the mtime path', async () => {
+    const pid = await startDaemon('test-reject-mtime');
+
+    // A legacy bare-PID file whose mtime sits four hours from the process start:
+    // exactly what a WSL2 host suspend produces, and not PID reuse.
+    //
+    // The drifted mtime carries a sub-millisecond fraction on purpose. Every
+    // mtime the production path compares against is fractional — NTFS stores
+    // 100ns units, ext4 nanoseconds — while the start time is whole
+    // milliseconds, so a drift landing on a round millisecond is an input no
+    // real run produces, and asserting against one hides an unrounded delta.
+    const pidFile = join(TEST_PID_DIR, 'test-reject-mtime.pid');
+    writeFileSync(pidFile, String(pid), 'utf8');
+    const drifted = (Date.now() - 4 * 3600000 + 0.484) / 1000;
+    utimesSync(pidFile, drifted, drifted);
+    expect(Number.isInteger(statSync(pidFile).mtimeMs)).toBe(false);
+
+    const status = await runCli(['-s', 'test-reject-mtime', '-d', TEST_PID_DIR]);
+    expect(status.code).toBe(1);
+    expect(status.stdout).toContain('could not be verified as ours');
+    expect(status.stdout).toMatch(/differs from the PID file by \d+ms/);
+    // The mtime path cannot establish reuse, so it must not claim it
+    expect(status.stdout).not.toContain('belongs to a different process');
   });
 });
 

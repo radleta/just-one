@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs';
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import {
   getPidFilePath,
   readPid,
   readPidRecord,
-  updateStartTicks,
+  writeIdentityEvidence,
   writePid,
   deletePid,
   listPids,
@@ -224,9 +224,13 @@ describe('PID operations', () => {
 
   describe('readPidRecord', () => {
     it('round-trips a PID written with start ticks', () => {
-      writePid('ticks-test', 12345, TEST_DIR, 987654);
+      writePid('ticks-test', 12345, TEST_DIR, { startTicks: 987654 });
 
-      expect(readPidRecord('ticks-test', TEST_DIR)).toEqual({ pid: 12345, startTicks: 987654 });
+      expect(readPidRecord('ticks-test', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: 987654,
+        startTime: null,
+      });
       expect(readPid('ticks-test', TEST_DIR)).toBe(12345);
     });
 
@@ -234,7 +238,11 @@ describe('PID operations', () => {
       mkdirSync(TEST_DIR, { recursive: true });
       writeFileSync(join(TEST_DIR, 'legacy.pid'), '12345', 'utf8');
 
-      expect(readPidRecord('legacy', TEST_DIR)).toEqual({ pid: 12345, startTicks: null });
+      expect(readPidRecord('legacy', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: null,
+        startTime: null,
+      });
     });
 
     it('omits start ticks when none are supplied', () => {
@@ -245,7 +253,7 @@ describe('PID operations', () => {
     });
 
     it('exposes start ticks through listPids', () => {
-      writePid('listed', 12345, TEST_DIR, 555);
+      writePid('listed', 12345, TEST_DIR, { startTicks: 555 });
 
       expect(listPids(TEST_DIR).find(p => p.name === 'listed')?.startTicks).toBe(555);
     });
@@ -262,19 +270,45 @@ describe('PID operations', () => {
     it('reads a file with CRLF line endings', () => {
       writeRaw('crlf', '12345\r\nstartTicks=999\r\n');
 
-      expect(readPidRecord('crlf', TEST_DIR)).toEqual({ pid: 12345, startTicks: 999 });
+      expect(readPidRecord('crlf', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: 999,
+        startTime: null,
+      });
     });
 
     it('ignores a non-numeric startTicks value and falls back to no ticks', () => {
       writeRaw('garbage', '12345\nstartTicks=not-a-number');
 
-      expect(readPidRecord('garbage', TEST_DIR)).toEqual({ pid: 12345, startTicks: null });
+      expect(readPidRecord('garbage', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: null,
+        startTime: null,
+      });
+    });
+
+    // Number('') is 0, so an empty value must be rejected before it becomes
+    // evidence of 0 — which would hard-reject a live process on the exact branch
+    it('treats an empty startTime value as absent, not as zero', () => {
+      writeRaw('empty-time', '12345\nstartTime=');
+
+      expect(readPidRecord('empty-time', TEST_DIR)?.startTime).toBeNull();
+    });
+
+    it('treats an empty startTicks value as absent, not as zero', () => {
+      writeRaw('empty-ticks', '12345\nstartTicks=   ');
+
+      expect(readPidRecord('empty-ticks', TEST_DIR)?.startTicks).toBeNull();
     });
 
     it('ignores unknown keys a future version might add', () => {
       writeRaw('future', '12345\nsomethingNew=abc\nstartTicks=777');
 
-      expect(readPidRecord('future', TEST_DIR)).toEqual({ pid: 12345, startTicks: 777 });
+      expect(readPidRecord('future', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: 777,
+        startTime: null,
+      });
     });
 
     it('rejects a file whose first line is not a PID', () => {
@@ -283,8 +317,46 @@ describe('PID operations', () => {
       expect(readPidRecord('bogus', TEST_DIR)).toBeNull();
     });
 
+    it('reads a startTime evidence key', () => {
+      writeRaw('wintime', '12345\nstartTime=1788887025388');
+
+      expect(readPidRecord('wintime', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: null,
+        startTime: 1788887025388,
+      });
+    });
+
+    it('ignores a non-numeric startTime value and falls back to no evidence', () => {
+      writeRaw('bad-time', '12345\nstartTime=not-a-number');
+
+      expect(readPidRecord('bad-time', TEST_DIR)?.startTime).toBeNull();
+    });
+
+    it('surfaces both evidence keys when a file somehow carries both', () => {
+      writeRaw('both', '12345\nstartTicks=777\nstartTime=888');
+
+      expect(readPidRecord('both', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: 777,
+        startTime: 888,
+      });
+    });
+
+    it('writes only the ticks key when both kinds of evidence are supplied', () => {
+      writePid('one-key', 12345, TEST_DIR, { startTicks: 777, startTime: 888 });
+
+      expect(readFileSync(join(TEST_DIR, 'one-key.pid'), 'utf8')).toBe('12345\nstartTicks=777');
+    });
+
+    it('writes a bare PID when the evidence object carries nothing', () => {
+      writePid('empty-evidence', 12345, TEST_DIR, { startTicks: null, startTime: null });
+
+      expect(readFileSync(join(TEST_DIR, 'empty-evidence.pid'), 'utf8')).toBe('12345');
+    });
+
     it('keeps the PID on the first line so older versions can parse it', () => {
-      writePid('legible', 12345, TEST_DIR, 999);
+      writePid('legible', 12345, TEST_DIR, { startTicks: 999 });
 
       const content = readFileSync(join(TEST_DIR, 'legible.pid'), 'utf8');
       // Older versions parseInt the whole file, which stops at the newline
@@ -292,28 +364,52 @@ describe('PID operations', () => {
     });
   });
 
-  describe('updateStartTicks', () => {
-    it('backfills ticks into a legacy bare-PID file', () => {
+  describe('writeIdentityEvidence', () => {
+    it('records ticks into a legacy bare-PID file', () => {
       writePid('backfill', 12345, TEST_DIR);
 
-      updateStartTicks('backfill', TEST_DIR, 4242);
+      writeIdentityEvidence('backfill', TEST_DIR, { startTicks: 4242 });
 
-      expect(readPidRecord('backfill', TEST_DIR)).toEqual({ pid: 12345, startTicks: 4242 });
+      expect(readPidRecord('backfill', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: 4242,
+        startTime: null,
+      });
+    });
+
+    it('records a start time into a legacy bare-PID file', () => {
+      writePid('backfill-time', 12345, TEST_DIR);
+
+      writeIdentityEvidence('backfill-time', TEST_DIR, { startTime: 1788887025388 });
+
+      expect(readPidRecord('backfill-time', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: null,
+        startTime: 1788887025388,
+      });
     });
 
     it('preserves the file mtime so older versions still verify the process', () => {
       writePid('preserve', 12345, TEST_DIR);
       const before = getPidFileMtime('preserve', TEST_DIR);
 
-      updateStartTicks('preserve', TEST_DIR, 4242);
+      writeIdentityEvidence('preserve', TEST_DIR, { startTicks: 4242 });
 
       expect(getPidFileMtime('preserve', TEST_DIR)).toBe(before);
     });
 
     it('does nothing when the PID file is missing', () => {
-      updateStartTicks('absent', TEST_DIR, 4242);
+      writeIdentityEvidence('absent', TEST_DIR, { startTicks: 4242 });
 
       expect(readPidRecord('absent', TEST_DIR)).toBeNull();
+    });
+
+    it('leaves no temporary file behind', () => {
+      writePid('atomic', 12345, TEST_DIR);
+
+      writeIdentityEvidence('atomic', TEST_DIR, { startTime: 999 });
+
+      expect(readdirSync(TEST_DIR).filter(f => f.startsWith('atomic'))).toEqual(['atomic.pid']);
     });
   });
 

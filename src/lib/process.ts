@@ -7,6 +7,7 @@ import { existsSync, openSync, closeSync, createWriteStream, readFileSync } from
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import pidusage from 'pidusage';
+import type { IdentityEvidence } from './pid.js';
 
 const isWindows = process.platform === 'win32';
 const isLinux = process.platform === 'linux';
@@ -74,35 +75,71 @@ export function getProcessStartTicks(pid: number): number | null {
   }
 }
 
+/** Which comparison produced an identity verdict. */
+export type IdentityBasis = 'ticks' | 'startTime' | 'mtime';
+
+export interface IdentityVerdict {
+  same: boolean;
+  /**
+   * The path that produced the answer. Only 'ticks' and 'startTime' are exact;
+   * a 'mtime' answer is a proxy either way, so nothing may infer identity from
+   * this field alone — that is what `same` is for.
+   */
+  basis: IdentityBasis;
+  /**
+   * |processStartTime - pidFileMtimeMs|, populated only on an mtime rejection.
+   * A large value is the clock-drift signature, not PID reuse.
+   */
+  deltaMs?: number;
+}
+
 /**
  * Check if a running process is the same instance we originally spawned.
  *
- * When the PID file recorded the process's start ticks (Linux), compares those
- * directly — an exact match, unaffected by clock jumps. Otherwise falls back to
- * comparing the process start time against the PID file's modification time.
+ * Resolution order: recorded start ticks compared exactly (Linux), else a
+ * recorded start time compared exactly (Windows), else the process start time
+ * compared against the PID file's modification time within a tolerance.
  *
- * Returns false if the process doesn't exist, its start time can't be
- * determined, or the start time doesn't match (likely PID reuse).
+ * Reports false if the process doesn't exist, its start time can't be
+ * determined, or the recorded evidence doesn't match (likely PID reuse).
  */
 export async function isSameProcessInstance(
   pid: number,
   pidFileMtimeMs: number,
-  recordedStartTicks?: number | null
-): Promise<boolean> {
-  if (recordedStartTicks != null) {
+  evidence?: IdentityEvidence
+): Promise<IdentityVerdict> {
+  if (evidence?.startTicks != null) {
     const currentTicks = getProcessStartTicks(pid);
+    // A null read proves nothing here: a tick-bearing file read on a platform
+    // without /proc must fall through rather than reject.
     if (currentTicks !== null) {
-      return currentTicks === recordedStartTicks;
+      return { same: currentTicks === evidence.startTicks, basis: 'ticks' };
     }
+  }
+
+  if (evidence?.startTime != null) {
+    const startTime = await getProcessStartTime(pid);
+    // Unlike ticks, a null read here does mean the process is gone: the
+    // recorded value came from the very source that just failed to answer.
+    if (startTime === null) {
+      return { same: false, basis: 'mtime' };
+    }
+    return { same: startTime === evidence.startTime, basis: 'startTime' };
   }
 
   const processStartTime = await getProcessStartTime(pid);
   if (processStartTime === null) {
-    return false;
+    return { same: false, basis: 'mtime' };
   }
 
-  const diff = Math.abs(processStartTime - pidFileMtimeMs);
-  return diff <= START_TIME_TOLERANCE_MS;
+  // Rounded where it is built, because it reaches the user as text. A file's
+  // mtime is fractional on every real filesystem — 100ns on NTFS, nanoseconds
+  // on ext4 — while the start time is whole milliseconds, so the raw
+  // difference carries a fractional tail.
+  const deltaMs = Math.round(Math.abs(processStartTime - pidFileMtimeMs));
+  return deltaMs <= START_TIME_TOLERANCE_MS
+    ? { same: true, basis: 'mtime' }
+    : { same: false, basis: 'mtime', deltaMs };
 }
 
 /**
