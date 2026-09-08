@@ -104,7 +104,8 @@ The safe implementation is in `src/lib/process.ts`:
 - `isProcessAlive(pid)` - Checks if specific PID is running
 - `isValidPid(pid)` - Validates PID range 1-4194304
 - `getProcessStartTime(pid)` - Gets process start time via pidusage
-- `isSameProcessInstance(pid, mtime)` - Verifies process identity by comparing start times
+- `getProcessStartTicks(pid)` - Gets start ticks from `/proc/<pid>/stat` (Linux only, null elsewhere)
+- `isSameProcessInstance(pid, mtime, startTicks?)` - Verifies process identity; exact tick match when `startTicks` is recorded, mtime comparison otherwise
 
 ## Development Workflow
 
@@ -240,12 +241,19 @@ npm run release:major    # Force major version bump
 
 ## PID Reuse Protection
 
-The tool verifies process identity before killing by comparing:
+The tool verifies process identity before killing it, so a recycled PID belonging to an unrelated process is never killed.
 
-- PID file modification time (when we wrote the PID)
-- Process start time (from OS via pidusage)
+**Linux (preferred):** `writePid` records the process's start ticks (field 22 of `/proc/<pid>/stat`) in the PID file next to the PID, and `isSameProcessInstance` compares them exactly. Ticks count from boot, so they are immune to wall-clock jumps.
 
-If these don't match within 5 seconds, the PID was likely reused by an unrelated process and we skip killing it. This prevents accidentally killing unrelated processes on systems with aggressive PID recycling (common on Windows).
+**Windows/macOS, and legacy bare-PID files:** falls back to comparing the PID file's mtime against the process start time from pidusage, with a 5 s tolerance.
+
+The fallback is unreliable wherever the wall clock and the uptime clock diverge. On WSL2 a host suspend freezes `/proc/uptime` while the wall clock keeps running, so pidusage's `timestamp - elapsed` drifts hours later than the real start and every live daemon reads as foreign — `-e` spawns duplicates, `-k`/`-s` refuse the daemon they started. The recorded ticks exist to close that hole.
+
+**PID file format:** first line is the PID; optional following lines are `key=value` (currently only `startTicks=`). `readPidRecord` parses both this and the legacy bare-PID form, tolerates CRLF, ignores unknown keys, and treats a non-numeric `startTicks=` as absent.
+
+**Backfill:** when a legacy bare-PID file verifies successfully, `backfillStartTicks` records the ticks in place so later checks use the exact comparison — a process started by an older version becomes drift-proof without a restart. It only fires on paths where the PID file survives (`-s`, `-pid`, and the `-e` skip branch), never right before a kill. `updateStartTicks` restores the file's mtime via `utimesSync` afterwards: an older just-one sharing the same PID dir still verifies by mtime, and bumping it would make live processes look stale to that version. Pass float seconds, not `Date` objects — `Date` truncates to whole milliseconds.
+
+**Compatibility, both directions (verified against a real 1.4.2 build):** an old version reads a new file correctly, because its `parseInt` stops at the newline; a new version reads a legacy file and falls back to the mtime path. A shared PID dir with mixed versions is safe.
 
 ## Common Issues
 

@@ -10,13 +10,23 @@ import {
   mkdirSync,
   readdirSync,
   statSync,
+  utimesSync,
 } from 'fs';
 import { join, dirname } from 'path';
+
+const START_TICKS_KEY = 'startTicks=';
 
 export interface PidInfo {
   name: string;
   pid: number;
   exists: boolean;
+  startTicks?: number | null;
+}
+
+export interface PidRecord {
+  pid: number;
+  /** Process start time in clock ticks since boot (Linux only, null elsewhere) */
+  startTicks: number | null;
 }
 
 /**
@@ -27,10 +37,13 @@ export function getPidFilePath(name: string, pidDir: string): string {
 }
 
 /**
- * Read the PID from a PID file
- * Returns null if the file doesn't exist or is invalid
+ * Read a PID file's full record: the PID plus, when it was written on a system
+ * that supports them, the process's start ticks.
+ *
+ * File format is line-oriented: the PID alone on the first line, then optional
+ * `key=value` lines. Files written by older versions hold only the bare PID.
  */
-export function readPid(name: string, pidDir: string): number | null {
+export function readPidRecord(name: string, pidDir: string): PidRecord | null {
   const pidFile = getPidFilePath(name, pidDir);
 
   if (!existsSync(pidFile)) {
@@ -38,24 +51,41 @@ export function readPid(name: string, pidDir: string): number | null {
   }
 
   try {
-    const content = readFileSync(pidFile, 'utf8').trim();
-    const pid = parseInt(content, 10);
+    const [pidLine, ...rest] = readFileSync(pidFile, 'utf8').trim().split('\n');
+    const pid = parseInt(pidLine ?? '', 10);
 
     if (isNaN(pid) || pid <= 0) {
       return null;
     }
 
-    return pid;
+    const ticksLine = rest.find(line => line.startsWith(START_TICKS_KEY));
+    const ticks = ticksLine ? Number(ticksLine.slice(START_TICKS_KEY.length)) : NaN;
+
+    return { pid, startTicks: Number.isFinite(ticks) ? ticks : null };
   } catch {
     return null;
   }
 }
 
 /**
- * Write a PID to a PID file
+ * Read the PID from a PID file
+ * Returns null if the file doesn't exist or is invalid
+ */
+export function readPid(name: string, pidDir: string): number | null {
+  return readPidRecord(name, pidDir)?.pid ?? null;
+}
+
+/**
+ * Write a PID to a PID file, optionally recording the process's start ticks so
+ * its identity can be verified exactly later.
  * Creates the directory if it doesn't exist
  */
-export function writePid(name: string, pid: number, pidDir: string): void {
+export function writePid(
+  name: string,
+  pid: number,
+  pidDir: string,
+  startTicks?: number | null
+): void {
   const pidFile = getPidFilePath(name, pidDir);
   const dir = dirname(pidFile);
 
@@ -63,7 +93,33 @@ export function writePid(name: string, pid: number, pidDir: string): void {
     mkdirSync(dir, { recursive: true });
   }
 
-  writeFileSync(pidFile, String(pid), 'utf8');
+  const content = startTicks != null ? `${pid}\n${START_TICKS_KEY}${startTicks}` : String(pid);
+  writeFileSync(pidFile, content, 'utf8');
+}
+
+/**
+ * Record start ticks into an existing PID file that was written without them.
+ *
+ * The file's mtime is restored afterwards: older versions of just-one verify
+ * identity by comparing that mtime against the process start time, so bumping
+ * it would make a live process look stale to them.
+ */
+export function updateStartTicks(name: string, pidDir: string, startTicks: number): void {
+  const pidFile = getPidFilePath(name, pidDir);
+
+  try {
+    const record = readPidRecord(name, pidDir);
+    if (record === null) {
+      return;
+    }
+
+    const { atimeMs, mtimeMs } = statSync(pidFile);
+    writePid(name, record.pid, pidDir, startTicks);
+    // Seconds as floats, not Date objects — Date truncates to whole milliseconds
+    utimesSync(pidFile, atimeMs / 1000, mtimeMs / 1000);
+  } catch {
+    // Best effort — a failed backfill just leaves the file on the mtime path.
+  }
 }
 
 /**
@@ -114,12 +170,13 @@ export function listPids(pidDir: string): PidInfo[] {
   return pidFiles.map(file => {
     // Remove .pid suffix (use slice to only remove from end)
     const name = file.slice(0, -4);
-    const pid = readPid(name, pidDir);
+    const record = readPidRecord(name, pidDir);
 
     return {
       name,
-      pid: pid ?? 0,
-      exists: pid !== null,
+      pid: record?.pid ?? 0,
+      exists: record !== null,
+      startTicks: record?.startTicks ?? null,
     };
   });
 }

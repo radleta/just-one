@@ -1,7 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { getPidFilePath, readPid, writePid, deletePid, listPids, getPidFileMtime } from './pid.js';
+import {
+  getPidFilePath,
+  readPid,
+  readPidRecord,
+  updateStartTicks,
+  writePid,
+  deletePid,
+  listPids,
+  getPidFileMtime,
+} from './pid.js';
 
 const TEST_DIR = '.test-just-one';
 
@@ -210,6 +219,104 @@ describe('PID operations', () => {
       expect(valid?.exists).toBe(true);
       expect(invalid?.pid).toBe(0);
       expect(invalid?.exists).toBe(false);
+    });
+  });
+
+  describe('readPidRecord', () => {
+    it('round-trips a PID written with start ticks', () => {
+      writePid('ticks-test', 12345, TEST_DIR, 987654);
+
+      expect(readPidRecord('ticks-test', TEST_DIR)).toEqual({ pid: 12345, startTicks: 987654 });
+      expect(readPid('ticks-test', TEST_DIR)).toBe(12345);
+    });
+
+    it('reads a legacy bare-PID file with no start ticks', () => {
+      mkdirSync(TEST_DIR, { recursive: true });
+      writeFileSync(join(TEST_DIR, 'legacy.pid'), '12345', 'utf8');
+
+      expect(readPidRecord('legacy.pid'.slice(0, -4), TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: null,
+      });
+    });
+
+    it('omits start ticks when none are supplied', () => {
+      writePid('no-ticks', 12345, TEST_DIR);
+
+      expect(readFileSync(join(TEST_DIR, 'no-ticks.pid'), 'utf8')).toBe('12345');
+      expect(readPidRecord('no-ticks', TEST_DIR)?.startTicks).toBeNull();
+    });
+
+    it('exposes start ticks through listPids', () => {
+      writePid('listed', 12345, TEST_DIR, 555);
+
+      expect(listPids(TEST_DIR).find(p => p.name === 'listed')?.startTicks).toBe(555);
+    });
+  });
+
+  // Files written by other just-one versions, or touched by other tooling, must
+  // stay readable — the parser's tolerance is the backwards-compatibility contract.
+  describe('PID file format compatibility', () => {
+    function writeRaw(name: string, content: string): void {
+      mkdirSync(TEST_DIR, { recursive: true });
+      writeFileSync(join(TEST_DIR, `${name}.pid`), content, 'utf8');
+    }
+
+    it('reads a file with CRLF line endings', () => {
+      writeRaw('crlf', '12345\r\nstartTicks=999\r\n');
+
+      expect(readPidRecord('crlf', TEST_DIR)).toEqual({ pid: 12345, startTicks: 999 });
+    });
+
+    it('ignores a non-numeric startTicks value and falls back to no ticks', () => {
+      writeRaw('garbage', '12345\nstartTicks=not-a-number');
+
+      expect(readPidRecord('garbage', TEST_DIR)).toEqual({ pid: 12345, startTicks: null });
+    });
+
+    it('ignores unknown keys a future version might add', () => {
+      writeRaw('future', '12345\nsomethingNew=abc\nstartTicks=777');
+
+      expect(readPidRecord('future', TEST_DIR)).toEqual({ pid: 12345, startTicks: 777 });
+    });
+
+    it('rejects a file whose first line is not a PID', () => {
+      writeRaw('bogus', 'startTicks=777\n12345');
+
+      expect(readPidRecord('bogus', TEST_DIR)).toBeNull();
+    });
+
+    it('keeps the PID on the first line so older versions can parse it', () => {
+      writePid('legible', 12345, TEST_DIR, 999);
+
+      const content = readFileSync(join(TEST_DIR, 'legible.pid'), 'utf8');
+      // Older versions parseInt the whole file, which stops at the newline
+      expect(parseInt(content, 10)).toBe(12345);
+    });
+  });
+
+  describe('updateStartTicks', () => {
+    it('backfills ticks into a legacy bare-PID file', () => {
+      writePid('backfill', 12345, TEST_DIR);
+
+      updateStartTicks('backfill', TEST_DIR, 4242);
+
+      expect(readPidRecord('backfill', TEST_DIR)).toEqual({ pid: 12345, startTicks: 4242 });
+    });
+
+    it('preserves the file mtime so older versions still verify the process', () => {
+      writePid('preserve', 12345, TEST_DIR);
+      const before = getPidFileMtime('preserve', TEST_DIR);
+
+      updateStartTicks('preserve', TEST_DIR, 4242);
+
+      expect(getPidFileMtime('preserve', TEST_DIR)).toBe(before);
+    });
+
+    it('does nothing when the PID file is missing', () => {
+      updateStartTicks('absent', TEST_DIR, 4242);
+
+      expect(readPidRecord('absent', TEST_DIR)).toBeNull();
     });
   });
 

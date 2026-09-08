@@ -7,7 +7,15 @@
 
 import { createRequire } from 'module';
 import { parseArgs, validateOptions, getHelpText, type CliOptions } from './lib/cli.js';
-import { readPid, writePid, deletePid, listPids, getPidFileMtime } from './lib/pid.js';
+import {
+  readPid,
+  readPidRecord,
+  writePid,
+  deletePid,
+  listPids,
+  getPidFileMtime,
+  updateStartTicks,
+} from './lib/pid.js';
 import {
   isProcessAlive,
   terminateProcess,
@@ -15,6 +23,7 @@ import {
   spawnCommandDaemon,
   setupSignalHandlers,
   isSameProcessInstance,
+  getProcessStartTicks,
 } from './lib/process.js';
 import { existsSync, mkdirSync } from 'fs';
 import {
@@ -40,6 +49,42 @@ function logError(message: string): void {
   console.error(message);
 }
 
+/**
+ * Upgrade a PID file written before start ticks were recorded, so that later
+ * checks use the exact tick comparison instead of the drift-prone mtime one.
+ * No-op when ticks are already present or the platform can't supply them.
+ */
+function backfillStartTicks(
+  name: string,
+  pid: number,
+  pidDir: string,
+  existingTicks: number | null | undefined
+): void {
+  if (existingTicks != null) {
+    return;
+  }
+
+  const ticks = getProcessStartTicks(pid);
+  if (ticks !== null) {
+    updateStartTicks(name, pidDir, ticks);
+  }
+}
+
+/**
+ * Verify that the PID tracked under `name` is still the process we started,
+ * using whatever identity evidence its PID file carries.
+ */
+async function isTrackedInstance(
+  name: string,
+  pid: number,
+  pidDir: string,
+  startTicks?: number | null
+): Promise<boolean> {
+  const ticks = startTicks !== undefined ? startTicks : readPidRecord(name, pidDir)?.startTicks;
+  const pidFileMtime = getPidFileMtime(name, pidDir);
+  return pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime, ticks));
+}
+
 async function handleKill(name: string, options: CliOptions): Promise<number> {
   const pid = readPid(name, options.pidDir);
 
@@ -50,8 +95,7 @@ async function handleKill(name: string, options: CliOptions): Promise<number> {
 
   // Verify this is the same process we originally started (prevents killing
   // unrelated processes that reused the same PID)
-  const pidFileMtime = getPidFileMtime(name, options.pidDir);
-  const isSameInstance = pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime));
+  const isSameInstance = await isTrackedInstance(name, pid, options.pidDir);
 
   if (!isSameInstance) {
     if (isProcessAlive(pid)) {
@@ -105,15 +149,20 @@ async function handleRun(options: CliOptions): Promise<number> {
   }
 
   // Check for existing process
-  const existingPid = readPid(name, options.pidDir);
-  if (existingPid !== null) {
-    const pidFileMtime = getPidFileMtime(name, options.pidDir);
-    const shouldKill =
-      pidFileMtime !== null && (await isSameProcessInstance(existingPid, pidFileMtime));
+  const existingRecord = readPidRecord(name, options.pidDir);
+  if (existingRecord !== null) {
+    const existingPid = existingRecord.pid;
+    const shouldKill = await isTrackedInstance(
+      name,
+      existingPid,
+      options.pidDir,
+      existingRecord.startTicks
+    );
 
     if (shouldKill) {
       // In ensure mode, if the process is verified running, skip restart
       if (options.ensure) {
+        backfillStartTicks(name, existingPid, options.pidDir, existingRecord.startTicks);
         log(`Process ${name} is already running (PID: ${existingPid}), skipping`, options);
         return 0;
       }
@@ -157,7 +206,7 @@ async function handleRun(options: CliOptions): Promise<number> {
       }
       const { pid } = spawnCommandDaemon(command, args, logPath!);
 
-      writePid(name, pid, options.pidDir);
+      writePid(name, pid, options.pidDir, getProcessStartTicks(pid));
       log(`Daemon started with PID: ${pid}`, options);
       log(`Logs: ${logPath!}`, options);
       return 0;
@@ -170,7 +219,7 @@ async function handleRun(options: CliOptions): Promise<number> {
     if (!existsSync(options.pidDir)) {
       mkdirSync(options.pidDir, { recursive: true });
     }
-    writePid(name, pid, options.pidDir);
+    writePid(name, pid, options.pidDir, getProcessStartTicks(pid));
     log(`Process started with PID: ${pid}`, options);
 
     // Set up signal handlers; pipedStdio only when log capture is active
@@ -190,17 +239,18 @@ async function handleRun(options: CliOptions): Promise<number> {
 }
 
 async function handleStatus(name: string, options: CliOptions): Promise<number> {
-  const pid = readPid(name, options.pidDir);
+  const record = readPidRecord(name, options.pidDir);
 
-  if (pid === null) {
+  if (record === null) {
     log(`Process ${name}: not tracked`, options);
     return 1;
   }
 
-  const pidFileMtime = getPidFileMtime(name, options.pidDir);
-  const isSameInstance = pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime));
+  const { pid } = record;
+  const isSameInstance = await isTrackedInstance(name, pid, options.pidDir, record.startTicks);
 
   if (isSameInstance) {
+    backfillStartTicks(name, pid, options.pidDir, record.startTicks);
     log(`Process ${name}: running (PID ${pid})`, options);
     return 0;
   }
@@ -228,9 +278,12 @@ async function handleKillAll(options: CliOptions): Promise<number> {
       continue;
     }
 
-    const pidFileMtime = getPidFileMtime(info.name, options.pidDir);
-    const isSameInstance =
-      pidFileMtime !== null && (await isSameProcessInstance(info.pid, pidFileMtime));
+    const isSameInstance = await isTrackedInstance(
+      info.name,
+      info.pid,
+      options.pidDir,
+      info.startTicks
+    );
 
     if (!isSameInstance) {
       log(`Process ${info.name} (PID: ${info.pid}) is stale, cleaning up`, options);
@@ -266,9 +319,12 @@ async function handleClean(options: CliOptions): Promise<number> {
       continue;
     }
 
-    const pidFileMtime = getPidFileMtime(info.name, options.pidDir);
-    const isSameInstance =
-      pidFileMtime !== null && (await isSameProcessInstance(info.pid, pidFileMtime));
+    const isSameInstance = await isTrackedInstance(
+      info.name,
+      info.pid,
+      options.pidDir,
+      info.startTicks
+    );
 
     if (!isSameInstance) {
       log(`Removing stale PID file: ${info.name} (PID: ${info.pid})`, options);
@@ -303,17 +359,18 @@ async function handleClean(options: CliOptions): Promise<number> {
 }
 
 async function handlePid(name: string, options: CliOptions): Promise<number> {
-  const pid = readPid(name, options.pidDir);
+  const record = readPidRecord(name, options.pidDir);
 
-  if (pid === null) {
+  if (record === null) {
     log(`No process found with name: ${name}`, options);
     return 1;
   }
 
-  const pidFileMtime = getPidFileMtime(name, options.pidDir);
-  const isSameInstance = pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime));
+  const { pid } = record;
+  const isSameInstance = await isTrackedInstance(name, pid, options.pidDir, record.startTicks);
 
   if (isSameInstance) {
+    backfillStartTicks(name, pid, options.pidDir, record.startTicks);
     // Always print PID to stdout, even in quiet mode — this is the command's purpose
     console.log(String(pid));
     return 0;

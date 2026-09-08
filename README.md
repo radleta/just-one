@@ -234,7 +234,7 @@ just-one -n storybook -d /tmp -- npx storybook dev
   storybook.pid    # Contains: 12345
   storybook.log    # Captured output (both foreground and daemon)
   storybook.log.1  # Rotated backup (auto-managed)
-  vite.pid         # Contains: 67890
+  vite.pid         # Contains: 67890 (plus start ticks on Linux)
 ```
 
 1. Check if a PID file exists for that name
@@ -246,12 +246,13 @@ just-one -n storybook -d /tmp -- npx storybook dev
 
 ### PID Reuse Protection
 
-Operating systems can reuse PIDs after a process terminates. To prevent accidentally killing an unrelated process that received the same PID, `just-one` compares:
+Operating systems can reuse PIDs after a process terminates. To prevent accidentally killing an unrelated process that received the same PID, `just-one` verifies the process's identity before killing it.
 
-- The PID file's modification time (when we recorded the PID)
-- The process's actual start time (from the OS)
+On Linux, the PID file records the process's start ticks (field 22 of `/proc/<pid>/stat`), which are counted from boot and never move with the wall clock. The check is an exact match.
 
-If these don't match within 5 seconds, the PID file is considered stale and the process is not killed.
+Elsewhere, `just-one` falls back to comparing the PID file's modification time against the process's start time reported by the OS; if these don't match within 5 seconds, the PID file is considered stale and the process is not killed.
+
+PID files written by older versions hold only a bare PID and use that fallback. On Linux the ticks are backfilled the first time such a file is verified, so a process started by an older version becomes exact without needing a restart. The file's modification time is preserved, so an older `just-one` sharing the same PID directory keeps working.
 
 <details>
 <summary><strong>Cross-platform process handling details</strong></summary>

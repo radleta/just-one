@@ -9,6 +9,7 @@ import {
   spawnCommandDaemon,
   setupSignalHandlers,
   getProcessStartTime,
+  getProcessStartTicks,
   isSameProcessInstance,
 } from './process.js';
 import { ChildProcess, spawn } from 'child_process';
@@ -16,6 +17,8 @@ import { EventEmitter } from 'events';
 import { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { execSync } from 'child_process';
 import { join } from 'path';
+
+const isLinux = process.platform === 'linux';
 
 describe('Process operations', () => {
   describe('isProcessAlive', () => {
@@ -708,6 +711,24 @@ describe('getProcessStartTime', () => {
   });
 });
 
+describe('getProcessStartTicks', () => {
+  it.runIf(isLinux)('returns positive ticks for the current process', () => {
+    expect(getProcessStartTicks(process.pid)).toBeGreaterThan(0);
+  });
+
+  it.skipIf(isLinux)('returns null on platforms without /proc', () => {
+    expect(getProcessStartTicks(process.pid)).toBeNull();
+  });
+
+  it('returns null for a non-existent PID', () => {
+    expect(getProcessStartTicks(999999)).toBeNull();
+  });
+
+  it('returns null for an invalid PID', () => {
+    expect(getProcessStartTicks(-1)).toBeNull();
+  });
+});
+
 describe('isSameProcessInstance', () => {
   it('returns true when times are within tolerance', async () => {
     const startTime = await getProcessStartTime(process.pid);
@@ -728,5 +749,29 @@ describe('isSameProcessInstance', () => {
   it('returns false for non-existent process', async () => {
     const result = await isSameProcessInstance(999999, Date.now());
     expect(result).toBe(false);
+  });
+
+  // On WSL2 a host suspend freezes /proc/uptime while the wall clock advances,
+  // so the uptime-derived start time drifts hours away from the PID file mtime
+  // and the mtime comparison rejects a process we started ourselves. Recorded
+  // start ticks come from the boot clock and survive the drift.
+  it.runIf(isLinux)('matches on recorded ticks despite a large mtime drift', async () => {
+    const ticks = getProcessStartTicks(process.pid);
+    expect(ticks).not.toBeNull();
+
+    const driftedMtime = Date.now() - 4 * 3600000;
+    expect(await isSameProcessInstance(process.pid, driftedMtime)).toBe(false);
+    expect(await isSameProcessInstance(process.pid, driftedMtime, ticks)).toBe(true);
+  });
+
+  it.runIf(isLinux)('returns false when recorded ticks belong to another process', async () => {
+    const ticks = getProcessStartTicks(process.pid);
+    const result = await isSameProcessInstance(process.pid, Date.now(), ticks! - 1);
+    expect(result).toBe(false);
+  });
+
+  it('falls back to the mtime comparison when no ticks were recorded', async () => {
+    const startTime = await getProcessStartTime(process.pid);
+    expect(await isSameProcessInstance(process.pid, startTime! + 100, null)).toBe(true);
   });
 });

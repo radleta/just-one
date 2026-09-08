@@ -5,7 +5,15 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, execSync, ChildProcess } from 'child_process';
-import { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  readFileSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+  statSync,
+  utimesSync,
+} from 'fs';
 import { join } from 'path';
 
 // CLI invocation configuration
@@ -1901,6 +1909,134 @@ describe('Exit Code Regression (Windows fix)', () => {
   it('kill of unknown exits 1 even when process.exitCode is polluted', async () => {
     const result = await runCliWithPoisonedExitCode(['-k', 'nonexistent', '-d', TEST_PID_DIR]);
     expect(result.code).toBe(1);
+  });
+});
+
+// Start-tick identity checks are Linux-only; other platforms keep the mtime path.
+const describeLinux = process.platform === 'linux' ? describe : describe.skip;
+
+describeLinux('Start Ticks Identity (WSL2 clock drift)', () => {
+  const sleepArgs = ['sleep', '60'];
+
+  // Push the PID file's mtime into the past, reproducing what a WSL2 host
+  // suspend does: /proc/uptime freezes while the wall clock keeps running, so
+  // the uptime-derived start time drifts far away from the recorded mtime.
+  function simulateClockDrift(name: string, hours: number): void {
+    const pidFile = join(TEST_PID_DIR, `${name}.pid`);
+    const drifted = (Date.now() - hours * 3600000) / 1000;
+    utimesSync(pidFile, drifted, drifted);
+  }
+
+  beforeEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+    mkdirSync(TEST_PID_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+  });
+
+  it('records start ticks in the PID file on spawn', async () => {
+    const result = await runCli(['-n', 'test-ticks', '-D', '-d', TEST_PID_DIR, '--', ...sleepArgs]);
+    expect(result.code).toBe(0);
+
+    const content = readFileSync(join(TEST_PID_DIR, 'test-ticks.pid'), 'utf8');
+    expect(content).toMatch(/^\d+\nstartTicks=\d+$/);
+    // Older versions parseInt the whole file, which stops at the newline
+    expect(parseInt(content, 10)).toBe(readPidFile('test-ticks'));
+  });
+
+  it('still recognizes its own daemon after a large clock drift', async () => {
+    const started = await runCli([
+      '-n',
+      'test-drift',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      ...sleepArgs,
+    ]);
+    expect(started.code).toBe(0);
+    const pid = readPidFile('test-drift');
+    expect(pid).not.toBeNull();
+    expect(await waitForProcessAlive(pid!, 5000)).toBe(true);
+
+    simulateClockDrift('test-drift', 4);
+
+    const status = await runCli(['-s', 'test-drift', '-d', TEST_PID_DIR]);
+    expect(status.code).toBe(0);
+    expect(status.stdout).toContain('running');
+  });
+
+  it('does not spawn a duplicate daemon under --ensure after a clock drift', async () => {
+    const started = await runCli([
+      '-n',
+      'test-drift-ensure',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      ...sleepArgs,
+    ]);
+    expect(started.code).toBe(0);
+    const firstPid = readPidFile('test-drift-ensure');
+    expect(firstPid).not.toBeNull();
+    expect(await waitForProcessAlive(firstPid!, 5000)).toBe(true);
+
+    simulateClockDrift('test-drift-ensure', 4);
+
+    const ensure = await runCli([
+      '-n',
+      'test-drift-ensure',
+      '-e',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      ...sleepArgs,
+    ]);
+
+    expect(ensure.code).toBe(0);
+    expect(ensure.stdout).toContain('already running');
+    expect(ensure.stdout).not.toContain('Daemon started');
+    // The original daemon is still the tracked one — nothing was leaked
+    expect(readPidFile('test-drift-ensure')).toBe(firstPid);
+  });
+
+  it('backfills ticks into a legacy bare-PID file without disturbing its mtime', async () => {
+    const started = await runCli([
+      '-n',
+      'test-backfill',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      ...sleepArgs,
+    ]);
+    expect(started.code).toBe(0);
+    const pid = readPidFile('test-backfill');
+    expect(pid).not.toBeNull();
+
+    // Rewrite as a file an older version would have produced: bare PID, no ticks
+    const pidFile = join(TEST_PID_DIR, 'test-backfill.pid');
+    writeFileSync(pidFile, String(pid), 'utf8');
+    const { atimeMs, mtimeMs } = statSync(pidFile);
+    utimesSync(pidFile, atimeMs / 1000, mtimeMs / 1000);
+
+    const status = await runCli(['-s', 'test-backfill', '-d', TEST_PID_DIR]);
+    expect(status.code).toBe(0);
+
+    // Ticks are now recorded, and the mtime older versions rely on is unchanged
+    expect(readFileSync(pidFile, 'utf8')).toMatch(/^\d+\nstartTicks=\d+$/);
+    expect(statSync(pidFile).mtimeMs).toBeCloseTo(mtimeMs, 0);
+
+    // Having been upgraded, it now survives the drift that would have broken it
+    simulateClockDrift('test-backfill', 4);
+    const after = await runCli(['-s', 'test-backfill', '-d', TEST_PID_DIR]);
+    expect(after.code).toBe(0);
+    expect(after.stdout).toContain('running');
   });
 });
 

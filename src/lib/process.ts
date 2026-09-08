@@ -3,12 +3,13 @@
  */
 
 import { spawn, execSync, ChildProcess, type StdioOptions } from 'child_process';
-import { existsSync, openSync, closeSync, createWriteStream } from 'fs';
+import { existsSync, openSync, closeSync, createWriteStream, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import pidusage from 'pidusage';
 
 const isWindows = process.platform === 'win32';
+const isLinux = process.platform === 'linux';
 
 // Constants for process termination
 const DEFAULT_GRACE_PERIOD_MS = 5000; // How long to wait after SIGTERM before escalating
@@ -24,6 +25,10 @@ export function isValidPid(pid: number): boolean {
 
 // Tolerance for comparing PID file mtime with process start time
 const START_TIME_TOLERANCE_MS = 5000; // 5 seconds
+
+// Position of starttime (field 22) within /proc/<pid>/stat once the fields
+// preceding it — pid (1) and comm (2) — have been sliced off.
+const STARTTIME_INDEX_AFTER_COMM = 19;
 
 /**
  * Get the start time of a process as Unix timestamp (milliseconds)
@@ -44,18 +49,53 @@ export async function getProcessStartTime(pid: number): Promise<number | null> {
 }
 
 /**
- * Check if a running process is the same instance we originally spawned.
- * Compares process start time with PID file modification time.
+ * Get a process's start time as raw clock ticks since boot (Linux only).
+ * Returns null on other platforms, or when /proc/<pid>/stat is unreadable.
  *
- * Returns true if:
- * - Process exists AND start time is within tolerance of pidFileMtime
- *
- * Returns false if:
- * - Process doesn't exist
- * - Can't determine process start time
- * - Start time doesn't match (likely PID reuse)
+ * Field 22 of /proc/<pid>/stat is immune to wall-clock movement, unlike the
+ * uptime-derived start time from pidusage. That matters on WSL2, where a host
+ * suspend freezes /proc/uptime while the wall clock keeps running, making every
+ * live process look like it started later than it did.
  */
-export async function isSameProcessInstance(pid: number, pidFileMtimeMs: number): Promise<boolean> {
+export function getProcessStartTicks(pid: number): number | null {
+  if (!isLinux || !isValidPid(pid)) {
+    return null;
+  }
+
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // The comm field (2) is parenthesized and may itself contain spaces and
+    // parens, so fields are only unambiguous after the final ')'.
+    const afterComm = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    const ticks = Number(afterComm[STARTTIME_INDEX_AFTER_COMM]);
+    return Number.isFinite(ticks) ? ticks : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if a running process is the same instance we originally spawned.
+ *
+ * When the PID file recorded the process's start ticks (Linux), compares those
+ * directly — an exact match, unaffected by clock jumps. Otherwise falls back to
+ * comparing the process start time against the PID file's modification time.
+ *
+ * Returns false if the process doesn't exist, its start time can't be
+ * determined, or the start time doesn't match (likely PID reuse).
+ */
+export async function isSameProcessInstance(
+  pid: number,
+  pidFileMtimeMs: number,
+  recordedStartTicks?: number | null
+): Promise<boolean> {
+  if (recordedStartTicks != null) {
+    const currentTicks = getProcessStartTicks(pid);
+    if (currentTicks !== null) {
+      return currentTicks === recordedStartTicks;
+    }
+  }
+
   const processStartTime = await getProcessStartTime(pid);
   if (processStartTime === null) {
     return false;
