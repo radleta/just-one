@@ -105,7 +105,7 @@ The safe implementation is in `src/lib/process.ts`:
 - `isValidPid(pid)` - Validates PID range 1-4194304
 - `getProcessStartTime(pid)` - Gets process start time via pidusage
 - `getProcessStartTicks(pid)` - Gets start ticks from `/proc/<pid>/stat` (Linux only, null elsewhere)
-- `isSameProcessInstance(pid, mtime, evidence?)` - Verifies process identity, returning `{ same, basis, deltaMs? }` rather than a bare boolean. `basis` is `'ticks' | 'startTime' | 'mtime'`; `deltaMs` appears only on an mtime rejection. Never infer identity from `basis` — `same` is the decision
+- `isSameProcessInstance(pid, mtime, evidence?)` - Verifies process identity, returning `{ same, basis, deltaMs? }` rather than a bare boolean. `basis` is `'ticks' | 'startTime' | 'mtime' | 'unreadable' | 'noPidFile'`; the last two mean nothing was compared — the process's start time could not be read, or the PID file could not be stat'd. `noPidFile` comes only from `isTrackedInstance`'s early return, never from `isSameProcessInstance`. `deltaMs` appears only on an mtime rejection. Never infer identity from `basis` — `same` is the decision
 
 ## Development Workflow
 
@@ -253,13 +253,15 @@ The fallback is unreliable wherever the wall clock and the uptime clock diverge.
 
 **PID file format:** first line is the PID; optional following lines are `key=value`. Two evidence keys are defined — `startTicks=` (Linux) and `startTime=` (Windows) — and at most one is written per file. `readPidRecord` parses both this and the legacy bare-PID form, tolerates CRLF, ignores unknown keys, and treats a non-numeric value as absent.
 
-**Rejection diagnostics:** the three rejection messages (`handleKill`, `handleRun`'s stale-PID branch, `handleStatus`) compose from the verdict via `describeRejection` in `index.ts`. An evidence rejection says the recorded start does not match; an mtime rejection reports the measured delta and deliberately does **not** claim a different process, because it cannot establish one — a multi-hour delta is the WSL2 clock signature.
+**Rejection diagnostics:** the three rejection messages (`handleKill`, `handleRun`'s stale-PID branch, `handleStatus`) compose from the verdict via `describeRejection`, which lives beside the verdict in `lib/process.ts` and is imported by `index.ts` — it sits there so every basis's message is provable inside the `src/lib/**` coverage gate without exporting anything from the published entry point. An evidence rejection says the recorded start does not match; an mtime rejection reports the measured delta and deliberately does **not** claim a different process, because it cannot establish one — a multi-hour delta is the WSL2 clock signature. An `unreadable` rejection (`getProcessStartTime` returned `null`, on either the recorded-`startTime` path or the mtime path) claims neither: it says the start time could not be read, since asserting a difference would name a comparison that never ran. A `noPidFile` rejection — `isTrackedInstance` could not stat the PID file — says that instead, because the two name different missing things and a reader told the wrong one looks in the wrong place.
 
 **Evidence recording:** when a legacy bare-PID file verifies successfully, `recordIdentityEvidence` (async) records ticks on Linux or the pidusage start time on Windows, in place, so later checks use the exact comparison — a process started by an older version becomes drift-proof without a restart. It no-ops on every other platform. It only fires on paths where the PID file survives (`-s`, `-pid`, and the `-e` skip branch), never right before a kill. Recording is lazy by design: reading the start time on Windows costs a `wmic`/PowerShell subprocess, which must stay off the spawn path `-e` runs every invocation.
 
 `writeIdentityEvidence` restores the file's mtime via `utimesSync` afterwards: an older just-one sharing the same PID dir still verifies by mtime, and bumping it would make live processes look stale to that version. Pass float seconds, not `Date` objects — `Date` truncates to whole milliseconds.
 
 **Atomic writes:** `writePid` writes to a `.tmp` sibling and `renameSync`s it into place, so a concurrent reader — an older just-one included — never `parseInt`s a truncated first line. The mtime restoration runs on the final path, after the rename.
+
+A write interrupted between the two calls leaves `<name>.pid.<writerPid>.tmp` behind, and every other path filters on `.pid`. `--clean` reclaims one whose embedded writer PID is dead (`listTempPidFiles` / `deleteTempPidFile` in `pid.ts`) and spares one whose writer is alive, since that is a write in flight rather than litter. `pid.ts` cannot run the liveness check itself — `process.ts` imports it, so the import cannot go the other way — which is why the writer PID comes back with each entry and `handleClean` filters.
 
 **Compatibility, both directions (verified against a real 1.4.2 install):** an old version reads a new file correctly, because its `parseInt` stops at the newline; a new version reads a legacy file and falls back to the mtime path. A shared PID dir with mixed versions is safe.
 
@@ -270,6 +272,7 @@ The fallback is unreliable wherever the wall clock and the uptime clock diverge.
 - **"Port already in use"** - That's what this tool solves! Use `just-one -n myapp -- <cmd>`
 - **Process not killed on Windows** - Ensure using `/T` flag to kill tree
 - **Orphaned PID file** - Normal behavior; next run will detect and handle
+- **Orphaned `.pid.<pid>.tmp` file** - Left by a `writePid` killed between its write and its rename; `just-one --clean` removes it once its writer PID is dead
 - **E2E tests flaky on Windows** - Increase timeouts (Windows process ops are slower)
 - **Daemon loses caller's environment (PATH, etc.)** - Was caused by daemon spawn calls not explicitly passing `env: process.env`; now fixed — all daemon spawn paths (both platforms + daemon-helper.js) explicitly inherit the caller's environment
 - **Windows daemon tests: empty logs** - Was caused by `shell: true` + `detached: true` with fd stdio; now fixed via daemon-helper.js wrapper (see Cross-Platform Notes)

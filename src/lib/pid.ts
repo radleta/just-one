@@ -220,6 +220,55 @@ export function getPidFileMtime(name: string, pidDir: string): number | null {
   }
 }
 
+/** An abandoned candidate left behind by an interrupted `writePid`. */
+export interface TempPidFile {
+  /** Absolute path to the `.tmp` file. */
+  path: string;
+  /** PID of the just-one process that was writing it. */
+  writerPid: number;
+}
+
+/**
+ * List the `<name>.pid.<writerPid>.tmp` siblings in a PID directory.
+ *
+ * `writePid` renames its temp file into place, so one of these survives only
+ * when a write was interrupted between the two calls. Nothing else removes
+ * them: every other path filters on `.pid`. The writer's PID comes back with
+ * each entry so the caller can leave a write that is still in flight alone —
+ * this module cannot make that check itself without importing `process.ts`,
+ * which imports this one.
+ */
+export function listTempPidFiles(pidDir: string): TempPidFile[] {
+  if (!existsSync(pidDir)) {
+    return [];
+  }
+
+  try {
+    return readdirSync(pidDir).reduce<TempPidFile[]>((found, file) => {
+      const writerPid = /\.pid\.(\d+)\.tmp$/.exec(file)?.[1];
+      if (writerPid !== undefined) {
+        found.push({ path: join(pidDir, file), writerPid: parseInt(writerPid, 10) });
+      }
+      return found;
+    }, []);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Delete a file listed by `listTempPidFiles`. Returns false if it is already
+ * gone or could not be removed — a concurrent writer may have just renamed it.
+ */
+export function deleteTempPidFile(path: string): boolean {
+  try {
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * List all PID files in the directory
  * Returns information about each tracked process

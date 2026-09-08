@@ -75,15 +75,20 @@ export function getProcessStartTicks(pid: number): number | null {
   }
 }
 
-/** Which comparison produced an identity verdict. */
-export type IdentityBasis = 'ticks' | 'startTime' | 'mtime';
+/**
+ * Which comparison produced an identity verdict, or which side of it was
+ * missing so that none could be made: 'unreadable' is a process whose start
+ * time could not be read, 'noPidFile' a record that could not be stat'd.
+ */
+export type IdentityBasis = 'ticks' | 'startTime' | 'mtime' | 'unreadable' | 'noPidFile';
 
 export interface IdentityVerdict {
   same: boolean;
   /**
    * The path that produced the answer. Only 'ticks' and 'startTime' are exact;
-   * a 'mtime' answer is a proxy either way, so nothing may infer identity from
-   * this field alone — that is what `same` is for.
+   * a 'mtime' answer is a proxy either way, and 'unreadable' and 'noPidFile'
+   * mean no comparison happened at all. Nothing may infer identity from this
+   * field alone — that is what `same` is for.
    */
   basis: IdentityBasis;
   /**
@@ -91,6 +96,34 @@ export interface IdentityVerdict {
    * A large value is the clock-drift signature, not PID reuse.
    */
   deltaMs?: number;
+}
+
+/**
+ * Say why a verification failed, so a rejection is readable without the source.
+ *
+ * Lives beside the verdict rather than at the three call sites, so the wording
+ * cannot drift between them and so every basis is provable inside this file's
+ * tests.
+ *
+ * An exact-evidence rejection is definite. An mtime rejection is not — it only
+ * says the two clocks disagree — so it reports the measured gap instead of
+ * asserting PID reuse, which is what makes clock drift legible as drift. An
+ * 'unreadable' or 'noPidFile' rejection compared nothing, so it must claim no
+ * difference — and it names which side was missing, because a reader told the
+ * wrong one looks in the wrong place.
+ */
+export function describeRejection(verdict: IdentityVerdict, pid: number): string {
+  if (verdict.basis === 'unreadable') {
+    return `PID ${pid} could not be verified as ours (its start time could not be read)`;
+  }
+  if (verdict.basis === 'noPidFile') {
+    return `PID ${pid} could not be verified as ours (its PID file could not be read)`;
+  }
+  if (verdict.basis === 'mtime') {
+    const by = verdict.deltaMs !== undefined ? ` by ${verdict.deltaMs}ms` : '';
+    return `PID ${pid} could not be verified as ours (start time differs from the PID file${by})`;
+  }
+  return `PID ${pid} belongs to a different process (recorded start does not match)`;
 }
 
 /**
@@ -122,14 +155,14 @@ export async function isSameProcessInstance(
     // Unlike ticks, a null read here does mean the process is gone: the
     // recorded value came from the very source that just failed to answer.
     if (startTime === null) {
-      return { same: false, basis: 'mtime' };
+      return { same: false, basis: 'unreadable' };
     }
     return { same: startTime === evidence.startTime, basis: 'startTime' };
   }
 
   const processStartTime = await getProcessStartTime(pid);
   if (processStartTime === null) {
-    return { same: false, basis: 'mtime' };
+    return { same: false, basis: 'unreadable' };
   }
 
   // Rounded where it is built, because it reaches the user as text. A file's

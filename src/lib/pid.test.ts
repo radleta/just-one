@@ -10,6 +10,8 @@ import {
   deletePid,
   listPids,
   getPidFileMtime,
+  listTempPidFiles,
+  deleteTempPidFile,
 } from './pid.js';
 
 const TEST_DIR = '.test-just-one';
@@ -395,7 +397,11 @@ describe('PID operations', () => {
 
       writeIdentityEvidence('preserve', TEST_DIR, { startTicks: 4242 });
 
-      expect(getPidFileMtime('preserve', TEST_DIR)).toBe(before);
+      // Not byte-equal: utimesSync takes float seconds, and NTFS stores 100ns ticks,
+      // so the value round-trips with sub-nanosecond error. What matters is that the
+      // drift stays far under START_TIME_TOLERANCE_MS, which is what an older
+      // just-one compares against.
+      expect(Math.abs(getPidFileMtime('preserve', TEST_DIR)! - before!)).toBeLessThan(1);
     });
 
     it('does nothing when the PID file is missing', () => {
@@ -429,6 +435,52 @@ describe('PID operations', () => {
     it('returns null for non-existent PID file', () => {
       const mtime = getPidFileMtime('nonexistent', TEST_DIR);
       expect(mtime).toBeNull();
+    });
+  });
+  describe('listTempPidFiles / deleteTempPidFile', () => {
+    // The outer beforeEach removes TEST_DIR; only writePid recreates it, and
+    // these tests plant their temp files directly.
+    beforeEach(() => {
+      mkdirSync(TEST_DIR, { recursive: true });
+    });
+
+    // writePid renames its temp sibling into place, so one only survives a
+    // write interrupted between the two calls. Every other path filters on
+    // .pid, which is why these two exist at all.
+    it('finds an abandoned temp file and reports its writer PID', () => {
+      writeFileSync(join(TEST_DIR, 'abandoned.pid.4242.tmp'), '999', 'utf8');
+
+      const found = listTempPidFiles(TEST_DIR);
+
+      expect(found).toEqual([{ path: join(TEST_DIR, 'abandoned.pid.4242.tmp'), writerPid: 4242 }]);
+    });
+
+    it('ignores PID files, log files and anything without an embedded PID', () => {
+      writePid('real', 12345, TEST_DIR);
+      writeFileSync(join(TEST_DIR, 'real.log'), 'output', 'utf8');
+      writeFileSync(join(TEST_DIR, 'nopid.pid.tmp'), '999', 'utf8');
+      writeFileSync(join(TEST_DIR, 'notanumber.pid.abc.tmp'), '999', 'utf8');
+
+      expect(listTempPidFiles(TEST_DIR)).toEqual([]);
+    });
+
+    it('returns an empty list for a directory that does not exist', () => {
+      expect(listTempPidFiles(join(TEST_DIR, 'no-such-dir'))).toEqual([]);
+    });
+
+    it('deletes a temp file and reports false the second time', () => {
+      const path = join(TEST_DIR, 'gone.pid.4242.tmp');
+      writeFileSync(path, '999', 'utf8');
+
+      expect(deleteTempPidFile(path)).toBe(true);
+      expect(existsSync(path)).toBe(false);
+      expect(deleteTempPidFile(path)).toBe(false);
+    });
+
+    it('leaves no temp file behind after a completed write', () => {
+      writePid('clean-write', 12345, TEST_DIR);
+
+      expect(listTempPidFiles(TEST_DIR)).toEqual([]);
     });
   });
 });

@@ -1714,6 +1714,23 @@ describe('Clean Command with Log Files', () => {
     expect(existsSync(join(TEST_PID_DIR, 'stale-app.log.1'))).toBe(false);
   });
 
+  // writePid renames its temp sibling into place; one survives only a write
+  // that died in between, and every other path filters on .pid.
+  it('removes an abandoned temp file but spares one from a live writer', async () => {
+    const abandoned = join(TEST_PID_DIR, 'abandoned.pid.999999999.tmp');
+    const inFlight = join(TEST_PID_DIR, `in-flight.pid.${process.pid}.tmp`);
+    writeFileSync(abandoned, '4242');
+    writeFileSync(inFlight, '4243');
+
+    const result = await runCli(['--clean', '-d', TEST_PID_DIR]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('orphaned temp file');
+    expect(existsSync(abandoned)).toBe(false);
+    // This test process is alive, so its temp file is a write in flight
+    expect(existsSync(inFlight)).toBe(true);
+  });
+
   it('removes orphaned log files with no matching PID file', async () => {
     // Create orphaned log files (no .pid file exists)
     writeFileSync(join(TEST_PID_DIR, 'orphaned-app.log'), 'orphaned logs');

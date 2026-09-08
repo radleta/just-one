@@ -83,9 +83,15 @@ npx just-one -n storybook --pid-dir /tmp -- npx storybook dev
 
 ```
 .just-one/
-  storybook.pid    # Contains: 12345
-  vite.pid         # Contains: 67890
+  storybook.pid    # 12345
+  vite.pid         # 67890
+                   # startTime=1788887025388
 ```
+
+Line 1 is the PID alone. Any following lines are `key=value` records of the
+process's identity, used to detect PID reuse: `startTicks=` on Linux,
+`startTime=` on Windows. They are written the first time the PID file is
+verified, not at spawn. A file carrying no such line is read as a legacy record.
 
 ### Process Lifecycle
 
@@ -189,7 +195,14 @@ If the parent dies unexpectedly (terminal closed, machine crash), the PID file r
 
 ### PID reuse
 
-On long-running systems, PIDs can be reused. Risk is minimal for dev servers (short-lived). If concerned, the `--list` command shows command info to verify.
+On long-running systems, PIDs can be reused, so a tracked PID may belong to an
+unrelated process by the time `just-one` acts on it. Before killing, the tracked
+process's identity is verified: exactly against the recorded start ticks on
+Linux or the recorded start time on Windows, and otherwise by comparing the PID
+file's modification time against the process's start time within a tolerance.
+A process that fails verification is never killed, and the rejection message
+names which comparison produced it — or says the start time could not be read,
+where no comparison was possible.
 
 ### Concurrent starts
 

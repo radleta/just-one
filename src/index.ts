@@ -15,6 +15,8 @@ import {
   listPids,
   getPidFileMtime,
   writeIdentityEvidence,
+  listTempPidFiles,
+  deleteTempPidFile,
   type IdentityEvidence,
 } from './lib/pid.js';
 import {
@@ -24,11 +26,13 @@ import {
   spawnCommandDaemon,
   setupSignalHandlers,
   isSameProcessInstance,
+  describeRejection,
   getProcessStartTicks,
   getProcessStartTime,
   type IdentityVerdict,
 } from './lib/process.js';
 import { existsSync, mkdirSync } from 'fs';
+import { basename } from 'path';
 import {
   getLogFilePath,
   rotateLogIfNeeded,
@@ -107,25 +111,11 @@ async function isTrackedInstance(
   const pidFileMtime = getPidFileMtime(name, pidDir);
 
   if (pidFileMtime === null) {
-    return { same: false, basis: 'mtime' };
+    // Nothing was compared: the record is what went missing, not the process.
+    return { same: false, basis: 'noPidFile' };
   }
 
   return isSameProcessInstance(pid, pidFileMtime, recorded);
-}
-
-/**
- * Say why a verification failed, so a rejection is readable without the source.
- *
- * An exact-evidence rejection is definite. An mtime rejection is not — it only
- * says the two clocks disagree — so it reports the measured gap instead of
- * asserting PID reuse, which is what makes clock drift legible as drift.
- */
-function describeRejection(verdict: IdentityVerdict, pid: number): string {
-  if (verdict.basis === 'mtime') {
-    const by = verdict.deltaMs !== undefined ? ` by ${verdict.deltaMs}ms` : '';
-    return `PID ${pid} could not be verified as ours (start time differs from the PID file${by})`;
-  }
-  return `PID ${pid} belongs to a different process (recorded start does not match)`;
 }
 
 async function handleKill(name: string, options: CliOptions): Promise<number> {
@@ -369,7 +359,20 @@ async function handleClean(options: CliOptions): Promise<number> {
     deleteLogFiles(name, options.pidDir);
   }
 
-  const totalCleaned = cleanedPids + orphanedLogs.length;
+  // Clean temp files abandoned by a writePid that died before its rename. A
+  // live writer's temp file is left alone: it is a write in flight, not litter.
+  let cleanedTemps = 0;
+  for (const temp of listTempPidFiles(options.pidDir)) {
+    if (isProcessAlive(temp.writerPid)) {
+      continue;
+    }
+    log(`Removing orphaned temp file: ${basename(temp.path)}`, options);
+    if (deleteTempPidFile(temp.path)) {
+      cleanedTemps++;
+    }
+  }
+
+  const totalCleaned = cleanedPids + orphanedLogs.length + cleanedTemps;
   if (totalCleaned === 0) {
     log('No stale files found', options);
   } else {
@@ -379,6 +382,9 @@ async function handleClean(options: CliOptions): Promise<number> {
     }
     if (orphanedLogs.length > 0) {
       parts.push(`${orphanedLogs.length} orphaned log file${orphanedLogs.length === 1 ? '' : 's'}`);
+    }
+    if (cleanedTemps > 0) {
+      parts.push(`${cleanedTemps} orphaned temp file${cleanedTemps === 1 ? '' : 's'}`);
     }
     log(`Cleaned ${parts.join(' and ')}`, options);
   }

@@ -11,6 +11,7 @@ import {
   getProcessStartTime,
   getProcessStartTicks,
   isSameProcessInstance,
+  describeRejection,
 } from './process.js';
 import { ChildProcess, spawn } from 'child_process';
 import { EventEmitter } from 'events';
@@ -775,9 +776,9 @@ describe('isSameProcessInstance', () => {
     expect(verdict.deltaMs).toBe(600000);
   });
 
-  it('rejects a non-existent process without a delta, since nothing was compared', async () => {
+  it('rejects a non-existent process as unreadable, since nothing was compared', async () => {
     const verdict = await isSameProcessInstance(999999, Date.now());
-    expect(verdict).toEqual({ same: false, basis: 'mtime' });
+    expect(verdict).toEqual({ same: false, basis: 'unreadable' });
   });
 
   // On WSL2 a host suspend freezes /proc/uptime while the wall clock advances,
@@ -837,7 +838,7 @@ describe('isSameProcessInstance', () => {
   // mtime path, which is what a tick-bearing record does.
   it('rejects when a recorded start time cannot be read back', async () => {
     const verdict = await isSameProcessInstance(999999, Date.now(), { startTime: 123456 });
-    expect(verdict).toEqual({ same: false, basis: 'mtime' });
+    expect(verdict).toEqual({ same: false, basis: 'unreadable' });
   });
 
   it.runIf(isLinux)('resolves ticks first when a record carries both kinds', async () => {
@@ -857,5 +858,50 @@ describe('isSameProcessInstance', () => {
       startTime: 1788887025388,
     });
     expect(verdict).toEqual({ same: true, basis: 'startTime' });
+  });
+});
+
+describe('describeRejection', () => {
+  // The reason the fourth basis exists: with 'unreadable' folded into 'mtime',
+  // a process whose start time could not be read printed a start-time
+  // *difference* — a comparison that never ran.
+  it('claims no comparison when the start time could not be read', async () => {
+    const verdict = await isSameProcessInstance(999999, Date.now(), { startTime: 123456 });
+
+    expect(verdict).toEqual({ same: false, basis: 'unreadable' });
+    expect(describeRejection(verdict, 999999)).toBe(
+      'PID 999999 could not be verified as ours (its start time could not be read)'
+    );
+    expect(describeRejection(verdict, 999999)).not.toContain('differs');
+    expect(describeRejection(verdict, 999999)).not.toContain('different process');
+  });
+
+  it('reports the measured delta on an mtime rejection', () => {
+    expect(describeRejection({ same: false, basis: 'mtime', deltaMs: 600000 }, 42)).toBe(
+      'PID 42 could not be verified as ours (start time differs from the PID file by 600000ms)'
+    );
+  });
+
+  it('omits the delta when an mtime rejection carries none', () => {
+    expect(describeRejection({ same: false, basis: 'mtime' }, 42)).toBe(
+      'PID 42 could not be verified as ours (start time differs from the PID file)'
+    );
+  });
+
+  // isTrackedInstance returns this basis when the PID file's mtime cannot be
+  // stat'd. It is not 'unreadable': there the process went missing, here the
+  // record did, and a reader told the wrong one looks in the wrong place.
+  it('claims no comparison when the PID file could not be read', () => {
+    const message = describeRejection({ same: false, basis: 'noPidFile' }, 42);
+
+    expect(message).toBe('PID 42 could not be verified as ours (its PID file could not be read)');
+    expect(message).not.toContain('differs');
+    expect(message).not.toContain('different process');
+  });
+
+  it.each(['ticks', 'startTime'] as const)('names recorded evidence for a %s rejection', basis => {
+    expect(describeRejection({ same: false, basis }, 42)).toBe(
+      'PID 42 belongs to a different process (recorded start does not match)'
+    );
   });
 });
