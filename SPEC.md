@@ -66,16 +66,28 @@ npx just-one -n storybook --pid-dir /tmp -- npx storybook dev
 
 ## CLI Options
 
-| Option            | Alias | Description                                     |
-| ----------------- | ----- | ----------------------------------------------- |
-| `--name <name>`   | `-n`  | Required. Name to identify this process         |
-| `--kill <name>`   | `-k`  | Kill the named process and exit                 |
-| `--list`          | `-l`  | List all tracked processes and their status     |
-| `--grace <secs>`  | `-g`  | Grace period before force kill (default: 5s)    |
-| `--pid-dir <dir>` | `-d`  | Directory for PID files (default: `.just-one/`) |
-| `--quiet`         | `-q`  | Suppress output                                 |
-| `--help`          | `-h`  | Show help                                       |
-| `--version`       | `-v`  | Show version                                    |
+| Option             | Alias | Description                                                         |
+| ------------------ | ----- | ------------------------------------------------------------------- |
+| `--name <name>`    | `-n`  | Required for run. Name to identify this process                     |
+| `--daemon`         | `-D`  | Run in background (detached)                                        |
+| `--no-log`         |       | Disable log file capture in foreground mode                         |
+| `--logs <name>`    | `-L`  | View captured logs for a named process                              |
+| `--tail`           | `-f`  | Follow log output in real-time (use with `--logs`)                  |
+| `--lines <n>`      |       | Number of lines to show (use with `--logs`)                         |
+| `--kill <name>`    | `-k`  | Kill the named process and exit                                     |
+| `--kill-all`       | `-K`  | Kill all tracked processes                                          |
+| `--status <name>`  | `-s`  | Check if a named process is running (exit 0/1)                      |
+| `--ensure`         | `-e`  | Only start if not already running (use with `-n`)                   |
+| `--pid <name>`     | `-p`  | Print the PID of a named process                                    |
+| `--wait <name>`    | `-w`  | Wait for a named process to exit                                    |
+| `--timeout <secs>` | `-t`  | Timeout in seconds (use with `--wait`)                              |
+| `--grace <secs>`   | `-g`  | Grace period before force kill (default: 5s)                        |
+| `--clean`          |       | Remove stale PID files, orphaned log files and abandoned temp files |
+| `--list`           | `-l`  | List all tracked processes and their status                         |
+| `--pid-dir <dir>`  | `-d`  | Directory for PID files (default: `.just-one/`)                     |
+| `--quiet`          | `-q`  | Suppress output                                                     |
+| `--help`           | `-h`  | Show help                                                           |
+| `--version`        | `-v`  | Show version                                                        |
 
 ## How It Works
 
@@ -170,11 +182,16 @@ npx just-one -n storybook-docs -- storybook dev -p 6007
 
 ### Dependencies
 
-None - uses only Node.js built-ins:
+One runtime dependency, [pidusage](https://github.com/soyuka/pidusage), which
+reports a process's start time cross-platform. It is used to verify process
+identity before killing, and on the platforms that record their own evidence
+(`/proc` on Linux, `ps -o lstart` on macOS) only as the fallback path.
 
-- `child_process` (spawn, execSync)
-- `fs` (readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync)
-- `path` (join, dirname)
+Everything else is a Node.js built-in:
+
+- `child_process` (spawn, execSync, execFileSync)
+- `fs` (read/write/stat/rename/utimes, directory listing)
+- `path` (join, dirname, basename)
 - `process` (platform, kill, on)
 
 ### Node.js Version
@@ -183,11 +200,12 @@ Requires Node.js >= 20.0.0 (for stable ES modules)
 
 ### Exit Codes
 
-| Code | Meaning                                  |
-| ---- | ---------------------------------------- |
-| 0    | Success (or child exited with 0)         |
-| 1    | Error (invalid args, spawn failed, etc.) |
-| \*   | Child's exit code (passed through)       |
+| Code | Meaning                                      |
+| ---- | -------------------------------------------- |
+| 0    | Success (or child exited with 0)             |
+| 1    | Error (invalid args, spawn failed, etc.)     |
+| 1    | `--status`: not running. `--wait`: timed out |
+| \*   | Child's exit code (passed through)           |
 
 ## Edge Cases
 
@@ -216,18 +234,23 @@ If two `just-one` commands with the same name start simultaneously, there's a ra
 ```
 just-one/
   src/
-    index.ts          # CLI entry point
+    index.ts           # Handler logic, exported as a pure main()
+    cli.ts             # CLI entry point (calls main(), handles process exit)
     lib/
-      cli.ts          # Argument parsing and validation
-      pid.ts          # PID file operations
-      process.ts      # Process spawn/kill
+      cli.ts           # Argument parsing and validation
+      pid.ts           # PID file operations
+      process.ts       # Process spawn/kill
+      log.ts           # Log file read/write/rotate/tail
+      *.test.ts        # Unit tests, beside the module they cover
     e2e/
-      cli.e2e.test.ts # End-to-end tests
+      cli.e2e.test.ts  # End-to-end tests
   bin/
-    just-one.js       # Shebang wrapper
+    just-one.js        # Shebang wrapper
+    daemon-helper.js   # Windows daemon-mode wrapper
   dist/
-    index.js          # Compiled ESM bundle
-    index.d.ts        # TypeScript declarations
+    cli.js             # Compiled CLI entry point
+    index.js           # Compiled library export
+    index.d.ts         # TypeScript declarations
   package.json
   README.md
   LICENSE
