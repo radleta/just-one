@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [1.4.3](https://github.com/radleta/just-one/compare/v1.4.2...v1.4.3) (2026-09-09)
+
+
+### Bug Fixes
+
+* **process:** verify PID identity by /proc start ticks on Linux ([9b7366f](https://github.com/radleta/just-one/commit/9b7366f40d5a81d5fe3b4ebda16ad2b20b27f3a6))
+* **process:** verify PID identity by exact ps lstart on macOS ([bd4d4a5](https://github.com/radleta/just-one/commit/bd4d4a5f28ca4416ac1ebbe146cf6523e4a72420))
+* **process:** verify PID identity by exact start time on Windows ([3945e40](https://github.com/radleta/just-one/commit/3945e409b70119f7a92f337e3e4181159728cb96))
+* report identity rejections truthfully and reclaim orphaned temp files ([9919e35](https://github.com/radleta/just-one/commit/9919e35a87614743d3eaf88b330c352bfde3f675))
+* **test:** assert Linux mtime preservation within 1ms ([fea3907](https://github.com/radleta/just-one/commit/fea3907994b0e72908ed23dc85c4c69268d2eed5))
+
 ### [1.4.2](https://github.com/radleta/just-one/compare/v1.4.1...v1.4.2) (2026-02-20)
 
 ### Bug Fixes
