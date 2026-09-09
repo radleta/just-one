@@ -268,7 +268,7 @@ A write interrupted between the two calls leaves `<name>.pid.<writerPid>.tmp` be
 
 **Compatibility, both directions (verified against a real 1.4.2 install):** an old version reads a new file correctly, because its `parseInt` stops at the newline; a new version reads a legacy file and falls back to the mtime path. A shared PID dir with mixed versions is safe.
 
-**Do not prove cross-version compatibility with `JUST_ONE_NPX=1 JUST_ONE_CLI=@radleta/just-one@<v> npx vitest run src/e2e/`.** When `<v>` equals the version in the local `package.json`, npx resolves the workspace build and the run silently tests the current code against itself — it passed 79/79 while the published 1.4.2 actually fails 6 of them. Install the published tarball into a temp dir and point `JUST_ONE_CLI` at its `bin/just-one.js` by absolute path instead. `npm run test:npm` has a related defect: it assigns `JUST_ONE_CLI` inline, overriding any inherited value and testing `latest`.
+**Do not prove cross-version compatibility with `JUST_ONE_NPX=1 JUST_ONE_CLI=@radleta/just-one@<v> npx vitest run src/e2e/`.** When `<v>` equals the version in the local `package.json`, npx resolves the workspace build and the run silently tests the current code against itself — it passed 79/79 while the published 1.4.2 actually fails 6 of them. Install the published tarball into a temp dir and point `JUST_ONE_CLI` at its `bin/just-one.js` by absolute path instead. `npm run test:npm` honors an inherited `JUST_ONE_CLI` (`${JUST_ONE_CLI:-@radleta/just-one}`) and otherwise tests `latest`. It still forces `JUST_ONE_NPX=1`, so it cannot take the absolute-path route above — use a bare `vitest run src/e2e/` with `JUST_ONE_CLI` set for that.
 
 ## Common Issues
 
