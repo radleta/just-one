@@ -1,7 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs';
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { getPidFilePath, readPid, writePid, deletePid, listPids, getPidFileMtime } from './pid.js';
+import {
+  getPidFilePath,
+  readPid,
+  readPidRecord,
+  writeIdentityEvidence,
+  writePid,
+  deletePid,
+  listPids,
+  getPidFileMtime,
+  listTempPidFiles,
+  deleteTempPidFile,
+} from './pid.js';
 
 const TEST_DIR = '.test-just-one';
 
@@ -213,6 +224,201 @@ describe('PID operations', () => {
     });
   });
 
+  describe('readPidRecord', () => {
+    it('round-trips a PID written with start ticks', () => {
+      writePid('ticks-test', 12345, TEST_DIR, { startTicks: 987654 });
+
+      expect(readPidRecord('ticks-test', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: 987654,
+        startTime: null,
+      });
+      expect(readPid('ticks-test', TEST_DIR)).toBe(12345);
+    });
+
+    it('reads a legacy bare-PID file with no start ticks', () => {
+      mkdirSync(TEST_DIR, { recursive: true });
+      writeFileSync(join(TEST_DIR, 'legacy.pid'), '12345', 'utf8');
+
+      expect(readPidRecord('legacy', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: null,
+        startTime: null,
+      });
+    });
+
+    it('omits start ticks when none are supplied', () => {
+      writePid('no-ticks', 12345, TEST_DIR);
+
+      expect(readFileSync(join(TEST_DIR, 'no-ticks.pid'), 'utf8')).toBe('12345');
+      expect(readPidRecord('no-ticks', TEST_DIR)?.startTicks).toBeNull();
+    });
+
+    it('exposes start ticks through listPids', () => {
+      writePid('listed', 12345, TEST_DIR, { startTicks: 555 });
+
+      expect(listPids(TEST_DIR).find(p => p.name === 'listed')?.startTicks).toBe(555);
+    });
+  });
+
+  // Files written by other just-one versions, or touched by other tooling, must
+  // stay readable — the parser's tolerance is the backwards-compatibility contract.
+  describe('PID file format compatibility', () => {
+    function writeRaw(name: string, content: string): void {
+      mkdirSync(TEST_DIR, { recursive: true });
+      writeFileSync(join(TEST_DIR, `${name}.pid`), content, 'utf8');
+    }
+
+    it('reads a file with CRLF line endings', () => {
+      writeRaw('crlf', '12345\r\nstartTicks=999\r\n');
+
+      expect(readPidRecord('crlf', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: 999,
+        startTime: null,
+      });
+    });
+
+    it('ignores a non-numeric startTicks value and falls back to no ticks', () => {
+      writeRaw('garbage', '12345\nstartTicks=not-a-number');
+
+      expect(readPidRecord('garbage', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: null,
+        startTime: null,
+      });
+    });
+
+    // Number('') is 0, so an empty value must be rejected before it becomes
+    // evidence of 0 — which would hard-reject a live process on the exact branch
+    it('treats an empty startTime value as absent, not as zero', () => {
+      writeRaw('empty-time', '12345\nstartTime=');
+
+      expect(readPidRecord('empty-time', TEST_DIR)?.startTime).toBeNull();
+    });
+
+    it('treats an empty startTicks value as absent, not as zero', () => {
+      writeRaw('empty-ticks', '12345\nstartTicks=   ');
+
+      expect(readPidRecord('empty-ticks', TEST_DIR)?.startTicks).toBeNull();
+    });
+
+    it('ignores unknown keys a future version might add', () => {
+      writeRaw('future', '12345\nsomethingNew=abc\nstartTicks=777');
+
+      expect(readPidRecord('future', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: 777,
+        startTime: null,
+      });
+    });
+
+    it('rejects a file whose first line is not a PID', () => {
+      writeRaw('bogus', 'startTicks=777\n12345');
+
+      expect(readPidRecord('bogus', TEST_DIR)).toBeNull();
+    });
+
+    it('reads a startTime evidence key', () => {
+      writeRaw('wintime', '12345\nstartTime=1788887025388');
+
+      expect(readPidRecord('wintime', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: null,
+        startTime: 1788887025388,
+      });
+    });
+
+    it('ignores a non-numeric startTime value and falls back to no evidence', () => {
+      writeRaw('bad-time', '12345\nstartTime=not-a-number');
+
+      expect(readPidRecord('bad-time', TEST_DIR)?.startTime).toBeNull();
+    });
+
+    it('surfaces both evidence keys when a file somehow carries both', () => {
+      writeRaw('both', '12345\nstartTicks=777\nstartTime=888');
+
+      expect(readPidRecord('both', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: 777,
+        startTime: 888,
+      });
+    });
+
+    it('writes only the ticks key when both kinds of evidence are supplied', () => {
+      writePid('one-key', 12345, TEST_DIR, { startTicks: 777, startTime: 888 });
+
+      expect(readFileSync(join(TEST_DIR, 'one-key.pid'), 'utf8')).toBe('12345\nstartTicks=777');
+    });
+
+    it('writes a bare PID when the evidence object carries nothing', () => {
+      writePid('empty-evidence', 12345, TEST_DIR, { startTicks: null, startTime: null });
+
+      expect(readFileSync(join(TEST_DIR, 'empty-evidence.pid'), 'utf8')).toBe('12345');
+    });
+
+    it('keeps the PID on the first line so older versions can parse it', () => {
+      writePid('legible', 12345, TEST_DIR, { startTicks: 999 });
+
+      const content = readFileSync(join(TEST_DIR, 'legible.pid'), 'utf8');
+      // Older versions parseInt the whole file, which stops at the newline
+      expect(parseInt(content, 10)).toBe(12345);
+    });
+  });
+
+  describe('writeIdentityEvidence', () => {
+    it('records ticks into a legacy bare-PID file', () => {
+      writePid('backfill', 12345, TEST_DIR);
+
+      writeIdentityEvidence('backfill', TEST_DIR, { startTicks: 4242 });
+
+      expect(readPidRecord('backfill', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: 4242,
+        startTime: null,
+      });
+    });
+
+    it('records a start time into a legacy bare-PID file', () => {
+      writePid('backfill-time', 12345, TEST_DIR);
+
+      writeIdentityEvidence('backfill-time', TEST_DIR, { startTime: 1788887025388 });
+
+      expect(readPidRecord('backfill-time', TEST_DIR)).toEqual({
+        pid: 12345,
+        startTicks: null,
+        startTime: 1788887025388,
+      });
+    });
+
+    it('preserves the file mtime so older versions still verify the process', () => {
+      writePid('preserve', 12345, TEST_DIR);
+      const before = getPidFileMtime('preserve', TEST_DIR);
+
+      writeIdentityEvidence('preserve', TEST_DIR, { startTicks: 4242 });
+
+      // Not byte-equal: utimesSync takes float seconds, and NTFS stores 100ns ticks,
+      // so the value round-trips with sub-nanosecond error. What matters is that the
+      // drift stays far under START_TIME_TOLERANCE_MS, which is what an older
+      // just-one compares against.
+      expect(Math.abs(getPidFileMtime('preserve', TEST_DIR)! - before!)).toBeLessThan(1);
+    });
+
+    it('does nothing when the PID file is missing', () => {
+      writeIdentityEvidence('absent', TEST_DIR, { startTicks: 4242 });
+
+      expect(readPidRecord('absent', TEST_DIR)).toBeNull();
+    });
+
+    it('leaves no temporary file behind', () => {
+      writePid('atomic', 12345, TEST_DIR);
+
+      writeIdentityEvidence('atomic', TEST_DIR, { startTime: 999 });
+
+      expect(readdirSync(TEST_DIR).filter(f => f.startsWith('atomic'))).toEqual(['atomic.pid']);
+    });
+  });
+
   describe('getPidFileMtime', () => {
     it('returns mtime for existing PID file', () => {
       const before = Date.now();
@@ -229,6 +435,52 @@ describe('PID operations', () => {
     it('returns null for non-existent PID file', () => {
       const mtime = getPidFileMtime('nonexistent', TEST_DIR);
       expect(mtime).toBeNull();
+    });
+  });
+  describe('listTempPidFiles / deleteTempPidFile', () => {
+    // The outer beforeEach removes TEST_DIR; only writePid recreates it, and
+    // these tests plant their temp files directly.
+    beforeEach(() => {
+      mkdirSync(TEST_DIR, { recursive: true });
+    });
+
+    // writePid renames its temp sibling into place, so one only survives a
+    // write interrupted between the two calls. Every other path filters on
+    // .pid, which is why these two exist at all.
+    it('finds an abandoned temp file and reports its writer PID', () => {
+      writeFileSync(join(TEST_DIR, 'abandoned.pid.4242.tmp'), '999', 'utf8');
+
+      const found = listTempPidFiles(TEST_DIR);
+
+      expect(found).toEqual([{ path: join(TEST_DIR, 'abandoned.pid.4242.tmp'), writerPid: 4242 }]);
+    });
+
+    it('ignores PID files, log files and anything without an embedded PID', () => {
+      writePid('real', 12345, TEST_DIR);
+      writeFileSync(join(TEST_DIR, 'real.log'), 'output', 'utf8');
+      writeFileSync(join(TEST_DIR, 'nopid.pid.tmp'), '999', 'utf8');
+      writeFileSync(join(TEST_DIR, 'notanumber.pid.abc.tmp'), '999', 'utf8');
+
+      expect(listTempPidFiles(TEST_DIR)).toEqual([]);
+    });
+
+    it('returns an empty list for a directory that does not exist', () => {
+      expect(listTempPidFiles(join(TEST_DIR, 'no-such-dir'))).toEqual([]);
+    });
+
+    it('deletes a temp file and reports false the second time', () => {
+      const path = join(TEST_DIR, 'gone.pid.4242.tmp');
+      writeFileSync(path, '999', 'utf8');
+
+      expect(deleteTempPidFile(path)).toBe(true);
+      expect(existsSync(path)).toBe(false);
+      expect(deleteTempPidFile(path)).toBe(false);
+    });
+
+    it('leaves no temp file behind after a completed write', () => {
+      writePid('clean-write', 12345, TEST_DIR);
+
+      expect(listTempPidFiles(TEST_DIR)).toEqual([]);
     });
   });
 });

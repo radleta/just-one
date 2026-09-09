@@ -9,13 +9,56 @@ import {
   spawnCommandDaemon,
   setupSignalHandlers,
   getProcessStartTime,
+  getProcessStartTicks,
+  getProcessLstart,
   isSameProcessInstance,
+  describeRejection,
 } from './process.js';
 import { ChildProcess, spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { execSync } from 'child_process';
 import { join } from 'path';
+
+// pidusage is the sole source of process start time. Its Linux backend derives
+// the value from /proc/uptime, whose 10ms resolution makes two reads of the
+// same process differ — so the exact startTime comparison, which Windows runs
+// on and where the value is measured stable, can only be proven here against a
+// frozen read. Left null, every call passes through to the real pidusage.
+const pidusageOverride = vi.hoisted(() => ({ startTime: null as number | null }));
+
+vi.mock('pidusage', async importOriginal => {
+  const actual = await importOriginal<{ default: (pid: number) => Promise<unknown> }>();
+  return {
+    default: (pid: number) =>
+      pidusageOverride.startTime === null
+        ? actual.default(pid)
+        : Promise.resolve({ timestamp: pidusageOverride.startTime, elapsed: 0 }),
+  };
+});
+
+const isLinux = process.platform === 'linux';
+const isDarwin = process.platform === 'darwin';
+
+// A start time this process could plausibly have had, used to prove the exact
+// comparison. Frozen rather than measured on the pidusage platforms because a
+// live read jitters there; see the mock above.
+const FROZEN_START_TIME = 1788887025388;
+
+/**
+ * The exact start time of this process as the platform's own recorder reads it:
+ * `ps -o lstart` on macOS, a frozen pidusage read everywhere else. Both sides of
+ * the comparison must come from one source, so a test cannot simply invent one.
+ */
+function exactStartTimeOfSelf(): number {
+  if (isDarwin) {
+    const lstart = getProcessLstart(process.pid);
+    expect(lstart).not.toBeNull();
+    return lstart!;
+  }
+  pidusageOverride.startTime = FROZEN_START_TIME;
+  return FROZEN_START_TIME;
+}
 
 describe('Process operations', () => {
   describe('isProcessAlive', () => {
@@ -708,25 +751,201 @@ describe('getProcessStartTime', () => {
   });
 });
 
+describe('getProcessStartTicks', () => {
+  it.runIf(isLinux)('returns positive ticks for the current process', () => {
+    expect(getProcessStartTicks(process.pid)).toBeGreaterThan(0);
+  });
+
+  it.skipIf(isLinux)('returns null on platforms without /proc', () => {
+    expect(getProcessStartTicks(process.pid)).toBeNull();
+  });
+
+  it('returns null for a non-existent PID', () => {
+    expect(getProcessStartTicks(999999)).toBeNull();
+  });
+
+  it('returns null for an invalid PID', () => {
+    expect(getProcessStartTicks(-1)).toBeNull();
+  });
+});
+
+describe('getProcessLstart', () => {
+  it.runIf(isDarwin)('returns the same start time on every read', () => {
+    const first = getProcessLstart(process.pid);
+    expect(first).toBeGreaterThan(0);
+    // The whole point of reading lstart rather than pidusage's etime: a second
+    // read must produce the identical value, or no exact comparison is possible.
+    expect(getProcessLstart(process.pid)).toBe(first);
+  });
+
+  it.runIf(isDarwin)('returns a start time in the past, at whole-second resolution', () => {
+    const startTime = getProcessLstart(process.pid)!;
+    expect(startTime).toBeLessThanOrEqual(Date.now());
+    expect(startTime % 1000).toBe(0);
+  });
+
+  it.skipIf(isDarwin)('returns null on platforms without ps lstart', () => {
+    expect(getProcessLstart(process.pid)).toBeNull();
+  });
+
+  it('returns null for a non-existent PID', () => {
+    expect(getProcessLstart(999999)).toBeNull();
+  });
+
+  it('returns null for an invalid PID', () => {
+    expect(getProcessLstart(-1)).toBeNull();
+  });
+});
+
 describe('isSameProcessInstance', () => {
-  it('returns true when times are within tolerance', async () => {
+  afterEach(() => {
+    pidusageOverride.startTime = null;
+  });
+
+  it('matches when times are within tolerance', async () => {
     const startTime = await getProcessStartTime(process.pid);
     expect(startTime).not.toBeNull();
     // Simulate PID file created around same time as process
-    const result = await isSameProcessInstance(process.pid, startTime! + 100);
-    expect(result).toBe(true);
+    const verdict = await isSameProcessInstance(process.pid, startTime! + 100);
+    expect(verdict).toEqual({ same: true, basis: 'mtime' });
   });
 
-  it('returns false when times differ significantly', async () => {
+  it('rejects when times differ significantly, reporting the measured gap', async () => {
+    // Frozen because the live read jitters: the Linux backend derives the
+    // start time from /proc/uptime at 10ms resolution, so comparing one read
+    // against another cannot pin an exact delta.
+    pidusageOverride.startTime = 1788887025388;
+
+    // A PID file from 10 minutes ago, with the sub-millisecond tail every real
+    // mtime carries — so this pins the rounding, not just the magnitude
+    const verdict = await isSameProcessInstance(process.pid, 1788887025388 - 600000 + 0.484);
+    expect(verdict.same).toBe(false);
+    expect(verdict.basis).toBe('mtime');
+    // The delta is what makes a clock drift legible as drift rather than reuse,
+    // and it reaches the user as text, so it is rounded where it is built
+    expect(verdict.deltaMs).toBe(600000);
+  });
+
+  it('rejects a non-existent process as unreadable, since nothing was compared', async () => {
+    const verdict = await isSameProcessInstance(999999, Date.now());
+    expect(verdict).toEqual({ same: false, basis: 'unreadable' });
+  });
+
+  // On WSL2 a host suspend freezes /proc/uptime while the wall clock advances,
+  // so the uptime-derived start time drifts hours away from the PID file mtime
+  // and the mtime comparison rejects a process we started ourselves. Recorded
+  // start ticks come from the boot clock and survive the drift.
+  it.runIf(isLinux)('matches on recorded ticks despite a large mtime drift', async () => {
+    const ticks = getProcessStartTicks(process.pid);
+    expect(ticks).not.toBeNull();
+
+    const driftedMtime = Date.now() - 4 * 3600000;
+    expect((await isSameProcessInstance(process.pid, driftedMtime)).same).toBe(false);
+    expect(await isSameProcessInstance(process.pid, driftedMtime, { startTicks: ticks })).toEqual({
+      same: true,
+      basis: 'ticks',
+    });
+  });
+
+  it.runIf(isLinux)('rejects on ticks when they belong to another process', async () => {
+    const ticks = getProcessStartTicks(process.pid);
+    const verdict = await isSameProcessInstance(process.pid, Date.now(), {
+      startTicks: ticks! - 1,
+    });
+    expect(verdict).toEqual({ same: false, basis: 'ticks' });
+  });
+
+  it('falls back to the mtime comparison when no evidence was recorded', async () => {
     const startTime = await getProcessStartTime(process.pid);
-    expect(startTime).not.toBeNull();
-    // Simulate PID file from 10 minutes ago
-    const result = await isSameProcessInstance(process.pid, startTime! - 600000);
-    expect(result).toBe(false);
+    const verdict = await isSameProcessInstance(process.pid, startTime! + 100, {
+      startTicks: null,
+      startTime: null,
+    });
+    expect(verdict).toEqual({ same: true, basis: 'mtime' });
   });
 
-  it('returns false for non-existent process', async () => {
-    const result = await isSameProcessInstance(999999, Date.now());
-    expect(result).toBe(false);
+  it('matches on a recorded start time despite a large mtime drift', async () => {
+    const startTime = exactStartTimeOfSelf();
+
+    const driftedMtime = Date.now() - 4 * 3600000;
+    const verdict = await isSameProcessInstance(process.pid, driftedMtime, { startTime });
+    expect(verdict).toEqual({ same: true, basis: 'startTime' });
+  });
+
+  it('rejects a recorded start time that is off by a single millisecond', async () => {
+    const verdict = await isSameProcessInstance(process.pid, Date.now(), {
+      startTime: exactStartTimeOfSelf() + 1,
+    });
+    expect(verdict).toEqual({ same: false, basis: 'startTime' });
+  });
+
+  // A null live read means the process is gone: the recorded value came from
+  // the very source that just failed to answer. It must not fall through to the
+  // mtime path, which is what a tick-bearing record does.
+  it('rejects when a recorded start time cannot be read back', async () => {
+    const verdict = await isSameProcessInstance(999999, Date.now(), { startTime: 123456 });
+    expect(verdict).toEqual({ same: false, basis: 'unreadable' });
+  });
+
+  it.runIf(isLinux)('resolves ticks first when a record carries both kinds', async () => {
+    const ticks = getProcessStartTicks(process.pid);
+    const verdict = await isSameProcessInstance(process.pid, Date.now(), {
+      startTicks: ticks,
+      startTime: 1,
+    });
+    expect(verdict).toEqual({ same: true, basis: 'ticks' });
+  });
+
+  it.skipIf(isLinux)('falls through to startTime when the live tick read fails', async () => {
+    const verdict = await isSameProcessInstance(process.pid, Date.now(), {
+      startTicks: 999,
+      startTime: exactStartTimeOfSelf(),
+    });
+    expect(verdict).toEqual({ same: true, basis: 'startTime' });
+  });
+});
+
+describe('describeRejection', () => {
+  // The reason the fourth basis exists: with 'unreadable' folded into 'mtime',
+  // a process whose start time could not be read printed a start-time
+  // *difference* — a comparison that never ran.
+  it('claims no comparison when the start time could not be read', async () => {
+    const verdict = await isSameProcessInstance(999999, Date.now(), { startTime: 123456 });
+
+    expect(verdict).toEqual({ same: false, basis: 'unreadable' });
+    expect(describeRejection(verdict, 999999)).toBe(
+      'PID 999999 could not be verified as ours (its start time could not be read)'
+    );
+    expect(describeRejection(verdict, 999999)).not.toContain('differs');
+    expect(describeRejection(verdict, 999999)).not.toContain('different process');
+  });
+
+  it('reports the measured delta on an mtime rejection', () => {
+    expect(describeRejection({ same: false, basis: 'mtime', deltaMs: 600000 }, 42)).toBe(
+      'PID 42 could not be verified as ours (start time differs from the PID file by 600000ms)'
+    );
+  });
+
+  it('omits the delta when an mtime rejection carries none', () => {
+    expect(describeRejection({ same: false, basis: 'mtime' }, 42)).toBe(
+      'PID 42 could not be verified as ours (start time differs from the PID file)'
+    );
+  });
+
+  // isTrackedInstance returns this basis when the PID file's mtime cannot be
+  // stat'd. It is not 'unreadable': there the process went missing, here the
+  // record did, and a reader told the wrong one looks in the wrong place.
+  it('claims no comparison when the PID file could not be read', () => {
+    const message = describeRejection({ same: false, basis: 'noPidFile' }, 42);
+
+    expect(message).toBe('PID 42 could not be verified as ours (its PID file could not be read)');
+    expect(message).not.toContain('differs');
+    expect(message).not.toContain('different process');
+  });
+
+  it.each(['ticks', 'startTime'] as const)('names recorded evidence for a %s rejection', basis => {
+    expect(describeRejection({ same: false, basis }, 42)).toBe(
+      'PID 42 belongs to a different process (recorded start does not match)'
+    );
   });
 });

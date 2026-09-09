@@ -5,7 +5,15 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, execSync, ChildProcess } from 'child_process';
-import { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  readFileSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+  statSync,
+  utimesSync,
+} from 'fs';
 import { join } from 'path';
 
 // CLI invocation configuration
@@ -1706,6 +1714,23 @@ describe('Clean Command with Log Files', () => {
     expect(existsSync(join(TEST_PID_DIR, 'stale-app.log.1'))).toBe(false);
   });
 
+  // writePid renames its temp sibling into place; one survives only a write
+  // that died in between, and every other path filters on .pid.
+  it('removes an abandoned temp file but spares one from a live writer', async () => {
+    const abandoned = join(TEST_PID_DIR, 'abandoned.pid.999999999.tmp');
+    const inFlight = join(TEST_PID_DIR, `in-flight.pid.${process.pid}.tmp`);
+    writeFileSync(abandoned, '4242');
+    writeFileSync(inFlight, '4243');
+
+    const result = await runCli(['--clean', '-d', TEST_PID_DIR]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('orphaned temp file');
+    expect(existsSync(abandoned)).toBe(false);
+    // This test process is alive, so its temp file is a write in flight
+    expect(existsSync(inFlight)).toBe(true);
+  });
+
   it('removes orphaned log files with no matching PID file', async () => {
     // Create orphaned log files (no .pid file exists)
     writeFileSync(join(TEST_PID_DIR, 'orphaned-app.log'), 'orphaned logs');
@@ -1901,6 +1926,345 @@ describe('Exit Code Regression (Windows fix)', () => {
   it('kill of unknown exits 1 even when process.exitCode is polluted', async () => {
     const result = await runCliWithPoisonedExitCode(['-k', 'nonexistent', '-d', TEST_PID_DIR]);
     expect(result.code).toBe(1);
+  });
+});
+
+// Start-tick identity checks are Linux-only; other platforms keep the mtime path.
+const describeLinux = process.platform === 'linux' ? describe : describe.skip;
+
+describeLinux('Start Ticks Identity (WSL2 clock drift)', () => {
+  const sleepCmd = 'sleep';
+  const sleepArgs = ['60'];
+
+  // Push the PID file's mtime into the past, reproducing what a WSL2 host
+  // suspend does: /proc/uptime freezes while the wall clock keeps running, so
+  // the uptime-derived start time drifts far away from the recorded mtime.
+  function simulateClockDrift(name: string, hours: number): void {
+    const pidFile = join(TEST_PID_DIR, `${name}.pid`);
+    const drifted = (Date.now() - hours * 3600000) / 1000;
+    utimesSync(pidFile, drifted, drifted);
+  }
+
+  beforeEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+    mkdirSync(TEST_PID_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+  });
+
+  it('records start ticks in the PID file on spawn', async () => {
+    const result = await runCli([
+      '-n',
+      'test-ticks',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(result.code).toBe(0);
+
+    const content = readFileSync(join(TEST_PID_DIR, 'test-ticks.pid'), 'utf8');
+    // Ticks only — the startTime key is for platforms that cannot supply ticks
+    expect(content).toMatch(/^\d+\nstartTicks=\d+$/);
+    // Older versions parseInt the whole file, which stops at the newline
+    expect(parseInt(content, 10)).toBe(readPidFile('test-ticks'));
+  });
+
+  it('still recognizes its own daemon after a large clock drift', async () => {
+    const started = await runCli([
+      '-n',
+      'test-drift',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(started.code).toBe(0);
+    const pid = readPidFile('test-drift');
+    expect(pid).not.toBeNull();
+    expect(await waitForProcessAlive(pid!, 5000)).toBe(true);
+
+    simulateClockDrift('test-drift', 4);
+
+    const status = await runCli(['-s', 'test-drift', '-d', TEST_PID_DIR]);
+    expect(status.code).toBe(0);
+    expect(status.stdout).toContain('running');
+  });
+
+  it('does not spawn a duplicate daemon under --ensure after a clock drift', async () => {
+    const started = await runCli([
+      '-n',
+      'test-drift-ensure',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(started.code).toBe(0);
+    const firstPid = readPidFile('test-drift-ensure');
+    expect(firstPid).not.toBeNull();
+    expect(await waitForProcessAlive(firstPid!, 5000)).toBe(true);
+
+    simulateClockDrift('test-drift-ensure', 4);
+
+    const ensure = await runCli([
+      '-n',
+      'test-drift-ensure',
+      '-e',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+
+    expect(ensure.code).toBe(0);
+    expect(ensure.stdout).toContain('already running');
+    expect(ensure.stdout).not.toContain('Daemon started');
+    // The original daemon is still the tracked one — nothing was leaked
+    expect(readPidFile('test-drift-ensure')).toBe(firstPid);
+  });
+
+  it('backfills ticks into a legacy bare-PID file without disturbing its mtime', async () => {
+    const started = await runCli([
+      '-n',
+      'test-backfill',
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(started.code).toBe(0);
+    const pid = readPidFile('test-backfill');
+    expect(pid).not.toBeNull();
+
+    // Rewrite as a file an older version would have produced: bare PID, no ticks
+    const pidFile = join(TEST_PID_DIR, 'test-backfill.pid');
+    writeFileSync(pidFile, String(pid), 'utf8');
+    const { mtimeMs } = statSync(pidFile);
+
+    const status = await runCli(['-s', 'test-backfill', '-d', TEST_PID_DIR]);
+    expect(status.code).toBe(0);
+
+    // Ticks are now recorded, and the mtime older versions rely on is preserved.
+    // Not to the bit: utimesSync takes float seconds, and a Unix epoch near
+    // 1.8e9 uses up enough of a double's digits that ext4's nanosecond tail
+    // cannot survive the round trip. Older versions compare it within 5s.
+    expect(readFileSync(pidFile, 'utf8')).toMatch(/^\d+\nstartTicks=\d+$/);
+    expect(Math.abs(statSync(pidFile).mtimeMs - mtimeMs)).toBeLessThan(1);
+
+    // Having been upgraded, it now survives the drift that would have broken it
+    simulateClockDrift('test-backfill', 4);
+    const after = await runCli(['-s', 'test-backfill', '-d', TEST_PID_DIR]);
+    expect(after.code).toBe(0);
+    expect(after.stdout).toContain('running');
+  });
+});
+
+// Start-time identity checks are macOS-only: every other platform either has
+// ticks or has no exactly-comparable start time at all.
+const describeDarwin = process.platform === 'darwin' ? describe : describe.skip;
+
+describeDarwin('Start Time Identity (macOS PID reuse)', () => {
+  const sleepCmd = 'sleep';
+  const sleepArgs = ['60'];
+
+  function pidFilePath(name: string): string {
+    return join(TEST_PID_DIR, `${name}.pid`);
+  }
+
+  function recordedStartTime(name: string): number {
+    const match = readFileSync(pidFilePath(name), 'utf8').match(/^startTime=(\d+)$/m);
+    expect(match).not.toBeNull();
+    return Number(match![1]);
+  }
+
+  function setMtime(name: string, ms: number): void {
+    utimesSync(pidFilePath(name), ms / 1000, ms / 1000);
+  }
+
+  async function startDaemonNamed(name: string): Promise<number> {
+    const result = await runCli([
+      '-n',
+      name,
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(result.code).toBe(0);
+    const pid = readPidFile(name);
+    expect(pid).not.toBeNull();
+    expect(await waitForProcessAlive(pid!, 5000)).toBe(true);
+    return pid!;
+  }
+
+  beforeEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+    mkdirSync(TEST_PID_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+  });
+
+  it('records the process start time in the PID file on spawn', async () => {
+    const pid = await startDaemonNamed('test-start-time');
+
+    const content = readFileSync(pidFilePath('test-start-time'), 'utf8');
+    // No ticks here — macOS has no /proc, so the start time is the exact value
+    expect(content).toMatch(/^\d+\nstartTime=\d+$/);
+    // Older versions parseInt the whole file, which stops at the newline
+    expect(parseInt(content, 10)).toBe(pid);
+  });
+
+  // The hole this closes: an unrelated process that inherits a recycled PID and
+  // happens to have started inside the 5s mtime tolerance verifies as ours and
+  // gets killed. Both halves run against the same live PID, so the only thing
+  // that differs between them is whether the file carries a recorded start.
+  it('rejects a recycled PID that the mtime tolerance would have accepted', async () => {
+    const pid = await startDaemonNamed('test-reuse');
+    // One second earlier: a different process, yet well inside the tolerance
+    const foreignStart = recordedStartTime('test-reuse') - 1000;
+
+    writeFileSync(pidFilePath('test-reuse'), `${pid}\nstartTime=${foreignStart}`, 'utf8');
+    setMtime('test-reuse', Date.now());
+    const withEvidence = await runCli(['-s', 'test-reuse', '-d', TEST_PID_DIR]);
+    expect(withEvidence.code).toBe(1);
+    expect(withEvidence.stdout).toContain('different process');
+
+    // The same PID, the same mtime, without the recorded start: accepted
+    writeFileSync(pidFilePath('test-reuse'), String(pid), 'utf8');
+    setMtime('test-reuse', Date.now());
+    const withoutEvidence = await runCli(['-s', 'test-reuse', '-d', TEST_PID_DIR]);
+    expect(withoutEvidence.code).toBe(0);
+    expect(withoutEvidence.stdout).toContain('running');
+  });
+
+  it('still recognizes its own daemon when the mtime is far from the start time', async () => {
+    await startDaemonNamed('test-mtime-gap');
+    setMtime('test-mtime-gap', Date.now() - 4 * 3600000);
+
+    const status = await runCli(['-s', 'test-mtime-gap', '-d', TEST_PID_DIR]);
+    expect(status.code).toBe(0);
+    expect(status.stdout).toContain('running');
+  });
+
+  it('backfills the start time into a legacy bare-PID file without disturbing its mtime', async () => {
+    const pid = await startDaemonNamed('test-backfill-start-time');
+
+    // Rewrite as a file an older version would have produced: bare PID
+    const pidFile = pidFilePath('test-backfill-start-time');
+    writeFileSync(pidFile, String(pid), 'utf8');
+    const { mtimeMs } = statSync(pidFile);
+
+    const status = await runCli(['-s', 'test-backfill-start-time', '-d', TEST_PID_DIR]);
+    expect(status.code).toBe(0);
+
+    // Recorded now, and the mtime older versions rely on is preserved. Not to
+    // the bit: utimesSync takes float seconds, and a Unix epoch near 1.8e9 uses
+    // up enough of a double's digits that APFS's sub-microsecond tail cannot
+    // survive the round trip. Older versions compare it within 5s.
+    expect(readFileSync(pidFile, 'utf8')).toMatch(/^\d+\nstartTime=\d+$/);
+    expect(Math.abs(statSync(pidFile).mtimeMs - mtimeMs)).toBeLessThan(1);
+
+    // Having been upgraded, it no longer depends on the mtime at all
+    setMtime('test-backfill-start-time', Date.now() - 4 * 3600000);
+    const after = await runCli(['-s', 'test-backfill-start-time', '-d', TEST_PID_DIR]);
+    expect(after.code).toBe(0);
+    expect(after.stdout).toContain('running');
+  });
+});
+
+// A rejection has to say what it rejected on. An exact-evidence mismatch is
+// definite; an mtime mismatch is only two clocks disagreeing, and reads as the
+// WSL2 drift signature rather than as PID reuse.
+describe('Rejection Diagnostics', () => {
+  const isWindows = process.platform === 'win32';
+  const sleepCmd = isWindows ? 'ping' : 'sleep';
+  const sleepArgs = isWindows ? ['-n', '60', '127.0.0.1'] : ['60'];
+
+  beforeEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+    mkdirSync(TEST_PID_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    killTrackedProcesses(TEST_PID_DIR);
+    await cleanTestDir(TEST_PID_DIR);
+  });
+
+  async function startDaemon(name: string): Promise<number> {
+    const started = await runCli([
+      '-n',
+      name,
+      '-D',
+      '-d',
+      TEST_PID_DIR,
+      '--',
+      sleepCmd,
+      ...sleepArgs,
+    ]);
+    expect(started.code).toBe(0);
+    const pid = readPidFile(name);
+    expect(pid).not.toBeNull();
+    expect(await waitForProcessAlive(pid!, 5000)).toBe(true);
+    return pid!;
+  }
+
+  it('names recorded evidence as the basis when a start time does not match', async () => {
+    const pid = await startDaemon('test-reject-evidence');
+
+    // A start time no live process can have — the exact comparison must reject it
+    writeFileSync(join(TEST_PID_DIR, 'test-reject-evidence.pid'), `${pid}\nstartTime=1`, 'utf8');
+
+    const status = await runCli(['-s', 'test-reject-evidence', '-d', TEST_PID_DIR]);
+    expect(status.code).toBe(1);
+    expect(status.stdout).toContain('recorded start does not match');
+    expect(status.stdout).toContain('belongs to a different process');
+  });
+
+  it('reports an unverified result with the measured delta on the mtime path', async () => {
+    const pid = await startDaemon('test-reject-mtime');
+
+    // A legacy bare-PID file whose mtime sits four hours from the process start:
+    // exactly what a WSL2 host suspend produces, and not PID reuse.
+    //
+    // The drifted mtime carries a sub-millisecond fraction on purpose. Every
+    // mtime the production path compares against is fractional — NTFS stores
+    // 100ns units, ext4 nanoseconds — while the start time is whole
+    // milliseconds, so a drift landing on a round millisecond is an input no
+    // real run produces, and asserting against one hides an unrounded delta.
+    const pidFile = join(TEST_PID_DIR, 'test-reject-mtime.pid');
+    writeFileSync(pidFile, String(pid), 'utf8');
+    const drifted = (Date.now() - 4 * 3600000 + 0.484) / 1000;
+    utimesSync(pidFile, drifted, drifted);
+    expect(Number.isInteger(statSync(pidFile).mtimeMs)).toBe(false);
+
+    const status = await runCli(['-s', 'test-reject-mtime', '-d', TEST_PID_DIR]);
+    expect(status.code).toBe(1);
+    expect(status.stdout).toContain('could not be verified as ours');
+    expect(status.stdout).toMatch(/differs from the PID file by \d+ms/);
+    // The mtime path cannot establish reuse, so it must not claim it
+    expect(status.stdout).not.toContain('belongs to a different process');
   });
 });
 

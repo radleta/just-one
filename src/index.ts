@@ -7,7 +7,18 @@
 
 import { createRequire } from 'module';
 import { parseArgs, validateOptions, getHelpText, type CliOptions } from './lib/cli.js';
-import { readPid, writePid, deletePid, listPids, getPidFileMtime } from './lib/pid.js';
+import {
+  readPid,
+  readPidRecord,
+  writePid,
+  deletePid,
+  listPids,
+  getPidFileMtime,
+  writeIdentityEvidence,
+  listTempPidFiles,
+  deleteTempPidFile,
+  type IdentityEvidence,
+} from './lib/pid.js';
 import {
   isProcessAlive,
   terminateProcess,
@@ -15,8 +26,14 @@ import {
   spawnCommandDaemon,
   setupSignalHandlers,
   isSameProcessInstance,
+  describeRejection,
+  getProcessStartTicks,
+  getProcessStartTime,
+  getProcessLstart,
+  type IdentityVerdict,
 } from './lib/process.js';
 import { existsSync, mkdirSync } from 'fs';
+import { basename } from 'path';
 import {
   getLogFilePath,
   rotateLogIfNeeded,
@@ -40,6 +57,76 @@ function logError(message: string): void {
   console.error(message);
 }
 
+/**
+ * Upgrade a PID file written before identity evidence was recorded, so that
+ * later checks use an exact comparison instead of the drift-prone mtime one.
+ * No-op when evidence is already present or the platform can't supply any.
+ *
+ * Recording happens here, on a verification that already succeeded, rather than
+ * at spawn: reading the start time on Windows costs a wmic/PowerShell
+ * subprocess, and --ensure runs the spawn path on every invocation. macOS is
+ * cheap enough (a 3.5ms `ps` call) to record at spawn as well, so this path
+ * only upgrades PID files an older version left bare there.
+ */
+async function recordIdentityEvidence(
+  name: string,
+  pid: number,
+  pidDir: string,
+  existing: IdentityEvidence
+): Promise<void> {
+  if (existing.startTicks != null || existing.startTime != null) {
+    return;
+  }
+
+  const ticks = getProcessStartTicks(pid);
+  if (ticks !== null) {
+    writeIdentityEvidence(name, pidDir, { startTicks: ticks });
+    return;
+  }
+
+  const lstart = getProcessLstart(pid);
+  if (lstart !== null) {
+    writeIdentityEvidence(name, pidDir, { startTime: lstart });
+    return;
+  }
+
+  // Every remaining platform reads its start time through pidusage's ps
+  // backend, whose one-second resolution cannot support an exact comparison.
+  // Those keep writing a bare PID file and stay on the mtime path.
+  if (process.platform !== 'win32') {
+    return;
+  }
+
+  const startTime = await getProcessStartTime(pid);
+  if (startTime !== null) {
+    writeIdentityEvidence(name, pidDir, { startTime });
+  }
+}
+
+/**
+ * Verify that the PID tracked under `name` is still the process we started,
+ * using whatever identity evidence its PID file carries.
+ *
+ * An omitted `evidence` means "re-read the record"; an object whose fields are
+ * null means "this record genuinely carries none". The two are not the same.
+ */
+async function isTrackedInstance(
+  name: string,
+  pid: number,
+  pidDir: string,
+  evidence?: IdentityEvidence
+): Promise<IdentityVerdict> {
+  const recorded = evidence ?? readPidRecord(name, pidDir) ?? {};
+  const pidFileMtime = getPidFileMtime(name, pidDir);
+
+  if (pidFileMtime === null) {
+    // Nothing was compared: the record is what went missing, not the process.
+    return { same: false, basis: 'noPidFile' };
+  }
+
+  return isSameProcessInstance(pid, pidFileMtime, recorded);
+}
+
 async function handleKill(name: string, options: CliOptions): Promise<number> {
   const pid = readPid(name, options.pidDir);
 
@@ -50,12 +137,11 @@ async function handleKill(name: string, options: CliOptions): Promise<number> {
 
   // Verify this is the same process we originally started (prevents killing
   // unrelated processes that reused the same PID)
-  const pidFileMtime = getPidFileMtime(name, options.pidDir);
-  const isSameInstance = pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime));
+  const verdict = await isTrackedInstance(name, pid, options.pidDir);
 
-  if (!isSameInstance) {
+  if (!verdict.same) {
     if (isProcessAlive(pid)) {
-      log(`PID ${pid} belongs to a different process, not killing`, options);
+      log(`${describeRejection(verdict, pid)}, not killing`, options);
     } else {
       log(`Process ${name} (PID: ${pid}) is not running, cleaning up PID file`, options);
     }
@@ -105,15 +191,15 @@ async function handleRun(options: CliOptions): Promise<number> {
   }
 
   // Check for existing process
-  const existingPid = readPid(name, options.pidDir);
-  if (existingPid !== null) {
-    const pidFileMtime = getPidFileMtime(name, options.pidDir);
-    const shouldKill =
-      pidFileMtime !== null && (await isSameProcessInstance(existingPid, pidFileMtime));
+  const existingRecord = readPidRecord(name, options.pidDir);
+  if (existingRecord !== null) {
+    const existingPid = existingRecord.pid;
+    const verdict = await isTrackedInstance(name, existingPid, options.pidDir, existingRecord);
 
-    if (shouldKill) {
+    if (verdict.same) {
       // In ensure mode, if the process is verified running, skip restart
       if (options.ensure) {
+        await recordIdentityEvidence(name, existingPid, options.pidDir, existingRecord);
         log(`Process ${name} is already running (PID: ${existingPid}), skipping`, options);
         return 0;
       }
@@ -126,7 +212,7 @@ async function handleRun(options: CliOptions): Promise<number> {
     } else if (isProcessAlive(existingPid)) {
       // PID exists but doesn't match our process - likely PID reuse
       log(
-        `Stale PID file detected (PID ${existingPid} belongs to different process), skipping kill`,
+        `Stale PID file detected: ${describeRejection(verdict, existingPid)}, skipping kill`,
         options
       );
     }
@@ -157,7 +243,10 @@ async function handleRun(options: CliOptions): Promise<number> {
       }
       const { pid } = spawnCommandDaemon(command, args, logPath!);
 
-      writePid(name, pid, options.pidDir);
+      writePid(name, pid, options.pidDir, {
+        startTicks: getProcessStartTicks(pid),
+        startTime: getProcessLstart(pid),
+      });
       log(`Daemon started with PID: ${pid}`, options);
       log(`Logs: ${logPath!}`, options);
       return 0;
@@ -170,7 +259,10 @@ async function handleRun(options: CliOptions): Promise<number> {
     if (!existsSync(options.pidDir)) {
       mkdirSync(options.pidDir, { recursive: true });
     }
-    writePid(name, pid, options.pidDir);
+    writePid(name, pid, options.pidDir, {
+      startTicks: getProcessStartTicks(pid),
+      startTime: getProcessLstart(pid),
+    });
     log(`Process started with PID: ${pid}`, options);
 
     // Set up signal handlers; pipedStdio only when log capture is active
@@ -190,23 +282,24 @@ async function handleRun(options: CliOptions): Promise<number> {
 }
 
 async function handleStatus(name: string, options: CliOptions): Promise<number> {
-  const pid = readPid(name, options.pidDir);
+  const record = readPidRecord(name, options.pidDir);
 
-  if (pid === null) {
+  if (record === null) {
     log(`Process ${name}: not tracked`, options);
     return 1;
   }
 
-  const pidFileMtime = getPidFileMtime(name, options.pidDir);
-  const isSameInstance = pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime));
+  const { pid } = record;
+  const verdict = await isTrackedInstance(name, pid, options.pidDir, record);
 
-  if (isSameInstance) {
+  if (verdict.same) {
+    await recordIdentityEvidence(name, pid, options.pidDir, record);
     log(`Process ${name}: running (PID ${pid})`, options);
     return 0;
   }
 
   if (isProcessAlive(pid)) {
-    log(`Process ${name}: stopped (PID ${pid} belongs to a different process)`, options);
+    log(`Process ${name}: stopped — ${describeRejection(verdict, pid)}`, options);
   } else {
     log(`Process ${name}: stopped`, options);
   }
@@ -228,11 +321,9 @@ async function handleKillAll(options: CliOptions): Promise<number> {
       continue;
     }
 
-    const pidFileMtime = getPidFileMtime(info.name, options.pidDir);
-    const isSameInstance =
-      pidFileMtime !== null && (await isSameProcessInstance(info.pid, pidFileMtime));
+    const { same } = await isTrackedInstance(info.name, info.pid, options.pidDir, info);
 
-    if (!isSameInstance) {
+    if (!same) {
       log(`Process ${info.name} (PID: ${info.pid}) is stale, cleaning up`, options);
       deletePid(info.name, options.pidDir);
       continue;
@@ -266,11 +357,9 @@ async function handleClean(options: CliOptions): Promise<number> {
       continue;
     }
 
-    const pidFileMtime = getPidFileMtime(info.name, options.pidDir);
-    const isSameInstance =
-      pidFileMtime !== null && (await isSameProcessInstance(info.pid, pidFileMtime));
+    const { same } = await isTrackedInstance(info.name, info.pid, options.pidDir, info);
 
-    if (!isSameInstance) {
+    if (!same) {
       log(`Removing stale PID file: ${info.name} (PID: ${info.pid})`, options);
       deletePid(info.name, options.pidDir);
       deleteLogFiles(info.name, options.pidDir);
@@ -285,7 +374,20 @@ async function handleClean(options: CliOptions): Promise<number> {
     deleteLogFiles(name, options.pidDir);
   }
 
-  const totalCleaned = cleanedPids + orphanedLogs.length;
+  // Clean temp files abandoned by a writePid that died before its rename. A
+  // live writer's temp file is left alone: it is a write in flight, not litter.
+  let cleanedTemps = 0;
+  for (const temp of listTempPidFiles(options.pidDir)) {
+    if (isProcessAlive(temp.writerPid)) {
+      continue;
+    }
+    log(`Removing orphaned temp file: ${basename(temp.path)}`, options);
+    if (deleteTempPidFile(temp.path)) {
+      cleanedTemps++;
+    }
+  }
+
+  const totalCleaned = cleanedPids + orphanedLogs.length + cleanedTemps;
   if (totalCleaned === 0) {
     log('No stale files found', options);
   } else {
@@ -296,6 +398,9 @@ async function handleClean(options: CliOptions): Promise<number> {
     if (orphanedLogs.length > 0) {
       parts.push(`${orphanedLogs.length} orphaned log file${orphanedLogs.length === 1 ? '' : 's'}`);
     }
+    if (cleanedTemps > 0) {
+      parts.push(`${cleanedTemps} orphaned temp file${cleanedTemps === 1 ? '' : 's'}`);
+    }
     log(`Cleaned ${parts.join(' and ')}`, options);
   }
 
@@ -303,17 +408,18 @@ async function handleClean(options: CliOptions): Promise<number> {
 }
 
 async function handlePid(name: string, options: CliOptions): Promise<number> {
-  const pid = readPid(name, options.pidDir);
+  const record = readPidRecord(name, options.pidDir);
 
-  if (pid === null) {
+  if (record === null) {
     log(`No process found with name: ${name}`, options);
     return 1;
   }
 
-  const pidFileMtime = getPidFileMtime(name, options.pidDir);
-  const isSameInstance = pidFileMtime !== null && (await isSameProcessInstance(pid, pidFileMtime));
+  const { pid } = record;
+  const { same } = await isTrackedInstance(name, pid, options.pidDir, record);
 
-  if (isSameInstance) {
+  if (same) {
+    await recordIdentityEvidence(name, pid, options.pidDir, record);
     // Always print PID to stdout, even in quiet mode — this is the command's purpose
     console.log(String(pid));
     return 0;

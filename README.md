@@ -174,7 +174,7 @@ just-one --list
 ### Clean Up Stale PID Files and Logs
 
 ```bash
-just-one --clean              # removes stale PID files and their associated log files
+just-one --clean              # removes stale PID files, their log files, and abandoned temp files
 ```
 
 ### Specify Custom PID Directory
@@ -189,28 +189,28 @@ just-one -n storybook -d /tmp -- npx storybook dev
 
 ## CLI Options
 
-| Option             | Alias | Description                                        |
-| ------------------ | ----- | -------------------------------------------------- |
-| `--name <name>`    | `-n`  | Required for run. Name to identify this process    |
-| `--daemon`         | `-D`  | Run in background (detached)                       |
-| `--no-log`         |       | Disable log file capture in foreground mode        |
-| `--logs <name>`    | `-L`  | View captured logs for a named process             |
-| `--tail`           | `-f`  | Follow log output in real-time (use with `--logs`) |
-| `--lines <n>`      |       | Number of lines to show (use with `--logs`)        |
-| `--kill <name>`    | `-k`  | Kill the named process and exit                    |
-| `--kill-all`       | `-K`  | Kill all tracked processes                         |
-| `--status <name>`  | `-s`  | Check if a named process is running (exit 0/1)     |
-| `--ensure`         | `-e`  | Only start if not already running (use with `-n`)  |
-| `--pid <name>`     | `-p`  | Print the PID of a named process                   |
-| `--wait <name>`    | `-w`  | Wait for a named process to exit                   |
-| `--timeout <secs>` | `-t`  | Timeout in seconds (use with `--wait`)             |
-| `--grace <secs>`   | `-g`  | Grace period before force kill (default: 5s)       |
-| `--clean`          |       | Remove stale PID files and orphaned log files      |
-| `--list`           | `-l`  | List all tracked processes and their status        |
-| `--pid-dir <dir>`  | `-d`  | Directory for PID files (default: `.just-one/`)    |
-| `--quiet`          | `-q`  | Suppress output                                    |
-| `--help`           | `-h`  | Show help                                          |
-| `--version`        | `-v`  | Show version                                       |
+| Option             | Alias | Description                                                         |
+| ------------------ | ----- | ------------------------------------------------------------------- |
+| `--name <name>`    | `-n`  | Required for run. Name to identify this process                     |
+| `--daemon`         | `-D`  | Run in background (detached)                                        |
+| `--no-log`         |       | Disable log file capture in foreground mode                         |
+| `--logs <name>`    | `-L`  | View captured logs for a named process                              |
+| `--tail`           | `-f`  | Follow log output in real-time (use with `--logs`)                  |
+| `--lines <n>`      |       | Number of lines to show (use with `--logs`)                         |
+| `--kill <name>`    | `-k`  | Kill the named process and exit                                     |
+| `--kill-all`       | `-K`  | Kill all tracked processes                                          |
+| `--status <name>`  | `-s`  | Check if a named process is running (exit 0/1)                      |
+| `--ensure`         | `-e`  | Only start if not already running (use with `-n`)                   |
+| `--pid <name>`     | `-p`  | Print the PID of a named process                                    |
+| `--wait <name>`    | `-w`  | Wait for a named process to exit                                    |
+| `--timeout <secs>` | `-t`  | Timeout in seconds (use with `--wait`)                              |
+| `--grace <secs>`   | `-g`  | Grace period before force kill (default: 5s)                        |
+| `--clean`          |       | Remove stale PID files, orphaned log files and abandoned temp files |
+| `--list`           | `-l`  | List all tracked processes and their status                         |
+| `--pid-dir <dir>`  | `-d`  | Directory for PID files (default: `.just-one/`)                     |
+| `--quiet`          | `-q`  | Suppress output                                                     |
+| `--help`           | `-h`  | Show help                                                           |
+| `--version`        | `-v`  | Show version                                                        |
 
 ## package.json Scripts
 
@@ -234,11 +234,11 @@ just-one -n storybook -d /tmp -- npx storybook dev
   storybook.pid    # Contains: 12345
   storybook.log    # Captured output (both foreground and daemon)
   storybook.log.1  # Rotated backup (auto-managed)
-  vite.pid         # Contains: 67890
+  vite.pid         # Contains: 67890 (plus recorded identity evidence)
 ```
 
 1. Check if a PID file exists for that name
-2. If yes, verify it's the same process we started (by comparing start times)
+2. If yes, verify it's the same process we started (see PID Reuse Protection below)
 3. If verified, send SIGTERM and wait up to 5 seconds (configurable with `--grace`)
 4. If still alive, escalate to SIGKILL (force kill)
 5. Start the new process
@@ -246,12 +246,19 @@ just-one -n storybook -d /tmp -- npx storybook dev
 
 ### PID Reuse Protection
 
-Operating systems can reuse PIDs after a process terminates. To prevent accidentally killing an unrelated process that received the same PID, `just-one` compares:
+Operating systems can reuse PIDs after a process terminates. To prevent accidentally killing an unrelated process that received the same PID, `just-one` verifies the process's identity before killing it.
 
-- The PID file's modification time (when we recorded the PID)
-- The process's actual start time (from the OS)
+On Linux, the PID file records the process's start ticks (field 22 of `/proc/<pid>/stat`), which are counted from boot and never move with the wall clock. The check is an exact match.
 
-If these don't match within 5 seconds, the PID file is considered stale and the process is not killed.
+On Windows, it records the process's creation time in milliseconds — a fixed value the OS reports rather than a computed one — the first time the PID file is verified. That check is an exact match too.
+
+On macOS, it records the process's absolute start time from `ps -o lstart`, at whole-second resolution but identical on every read. That check is an exact match too. It is not the elapsed time other tools report on macOS, which is derived from a moving clock and differs by up to a second between two reads of the same process.
+
+On every other platform, `just-one` falls back to comparing the PID file's modification time against the process's start time reported by the OS; if these don't match within 5 seconds, the PID file is considered stale and the process is not killed. The fallback stays in place there because those systems report a process's elapsed time in whole seconds, which is too coarse to compare exactly.
+
+PID files written by older versions hold only a bare PID and use that fallback. The exact value is recorded the first time such a file is verified, so a process started by an older version becomes exact without needing a restart. The file's modification time is preserved, so an older `just-one` sharing the same PID directory keeps working.
+
+When a check fails, the message says what it failed on. A mismatch against a recorded start is definite and reports a different process. A mismatch on the modification-time fallback is not, so it reports an unverified result along with the measured gap — a gap of hours is a clock that moved, not a reused PID. If the process's start time cannot be read at all, the message says that instead, and claims no mismatch.
 
 <details>
 <summary><strong>Cross-platform process handling details</strong></summary>
