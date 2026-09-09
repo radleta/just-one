@@ -2059,9 +2059,12 @@ describeLinux('Start Ticks Identity (WSL2 clock drift)', () => {
     const status = await runCli(['-s', 'test-backfill', '-d', TEST_PID_DIR]);
     expect(status.code).toBe(0);
 
-    // Ticks are now recorded, and the mtime older versions rely on is unchanged
+    // Ticks are now recorded, and the mtime older versions rely on is preserved.
+    // Not to the bit: utimesSync takes float seconds, and a Unix epoch near
+    // 1.8e9 uses up enough of a double's digits that ext4's nanosecond tail
+    // cannot survive the round trip. Older versions compare it within 5s.
     expect(readFileSync(pidFile, 'utf8')).toMatch(/^\d+\nstartTicks=\d+$/);
-    expect(statSync(pidFile).mtimeMs).toBe(mtimeMs);
+    expect(Math.abs(statSync(pidFile).mtimeMs - mtimeMs)).toBeLessThan(1);
 
     // Having been upgraded, it now survives the drift that would have broken it
     simulateClockDrift('test-backfill', 4);
