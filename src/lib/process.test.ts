@@ -10,6 +10,7 @@ import {
   setupSignalHandlers,
   getProcessStartTime,
   getProcessStartTicks,
+  getProcessLstart,
   isSameProcessInstance,
   describeRejection,
 } from './process.js';
@@ -37,6 +38,27 @@ vi.mock('pidusage', async importOriginal => {
 });
 
 const isLinux = process.platform === 'linux';
+const isDarwin = process.platform === 'darwin';
+
+// A start time this process could plausibly have had, used to prove the exact
+// comparison. Frozen rather than measured on the pidusage platforms because a
+// live read jitters there; see the mock above.
+const FROZEN_START_TIME = 1788887025388;
+
+/**
+ * The exact start time of this process as the platform's own recorder reads it:
+ * `ps -o lstart` on macOS, a frozen pidusage read everywhere else. Both sides of
+ * the comparison must come from one source, so a test cannot simply invent one.
+ */
+function exactStartTimeOfSelf(): number {
+  if (isDarwin) {
+    const lstart = getProcessLstart(process.pid);
+    expect(lstart).not.toBeNull();
+    return lstart!;
+  }
+  pidusageOverride.startTime = FROZEN_START_TIME;
+  return FROZEN_START_TIME;
+}
 
 describe('Process operations', () => {
   describe('isProcessAlive', () => {
@@ -747,6 +769,34 @@ describe('getProcessStartTicks', () => {
   });
 });
 
+describe('getProcessLstart', () => {
+  it.runIf(isDarwin)('returns the same start time on every read', () => {
+    const first = getProcessLstart(process.pid);
+    expect(first).toBeGreaterThan(0);
+    // The whole point of reading lstart rather than pidusage's etime: a second
+    // read must produce the identical value, or no exact comparison is possible.
+    expect(getProcessLstart(process.pid)).toBe(first);
+  });
+
+  it.runIf(isDarwin)('returns a start time in the past, at whole-second resolution', () => {
+    const startTime = getProcessLstart(process.pid)!;
+    expect(startTime).toBeLessThanOrEqual(Date.now());
+    expect(startTime % 1000).toBe(0);
+  });
+
+  it.skipIf(isDarwin)('returns null on platforms without ps lstart', () => {
+    expect(getProcessLstart(process.pid)).toBeNull();
+  });
+
+  it('returns null for a non-existent PID', () => {
+    expect(getProcessLstart(999999)).toBeNull();
+  });
+
+  it('returns null for an invalid PID', () => {
+    expect(getProcessLstart(-1)).toBeNull();
+  });
+});
+
 describe('isSameProcessInstance', () => {
   afterEach(() => {
     pidusageOverride.startTime = null;
@@ -815,20 +865,16 @@ describe('isSameProcessInstance', () => {
   });
 
   it('matches on a recorded start time despite a large mtime drift', async () => {
-    pidusageOverride.startTime = 1788887025388;
+    const startTime = exactStartTimeOfSelf();
 
     const driftedMtime = Date.now() - 4 * 3600000;
-    const verdict = await isSameProcessInstance(process.pid, driftedMtime, {
-      startTime: 1788887025388,
-    });
+    const verdict = await isSameProcessInstance(process.pid, driftedMtime, { startTime });
     expect(verdict).toEqual({ same: true, basis: 'startTime' });
   });
 
   it('rejects a recorded start time that is off by a single millisecond', async () => {
-    pidusageOverride.startTime = 1788887025388;
-
     const verdict = await isSameProcessInstance(process.pid, Date.now(), {
-      startTime: 1788887025389,
+      startTime: exactStartTimeOfSelf() + 1,
     });
     expect(verdict).toEqual({ same: false, basis: 'startTime' });
   });
@@ -851,11 +897,9 @@ describe('isSameProcessInstance', () => {
   });
 
   it.skipIf(isLinux)('falls through to startTime when the live tick read fails', async () => {
-    pidusageOverride.startTime = 1788887025388;
-
     const verdict = await isSameProcessInstance(process.pid, Date.now(), {
       startTicks: 999,
-      startTime: 1788887025388,
+      startTime: exactStartTimeOfSelf(),
     });
     expect(verdict).toEqual({ same: true, basis: 'startTime' });
   });

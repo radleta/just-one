@@ -2,7 +2,7 @@
  * Cross-platform process handling for just-one
  */
 
-import { spawn, execSync, ChildProcess, type StdioOptions } from 'child_process';
+import { spawn, execSync, execFileSync, ChildProcess, type StdioOptions } from 'child_process';
 import { existsSync, openSync, closeSync, createWriteStream, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -11,6 +11,7 @@ import type { IdentityEvidence } from './pid.js';
 
 const isWindows = process.platform === 'win32';
 const isLinux = process.platform === 'linux';
+const isDarwin = process.platform === 'darwin';
 
 // Constants for process termination
 const DEFAULT_GRACE_PERIOD_MS = 5000; // How long to wait after SIGTERM before escalating
@@ -76,6 +77,40 @@ export function getProcessStartTicks(pid: number): number | null {
 }
 
 /**
+ * Get a process's start time from `ps -o lstart` as a Unix timestamp in
+ * milliseconds (macOS only). Returns null on other platforms, or when ps has
+ * no answer for the PID.
+ *
+ * pidusage's ps backend reports `etime`, an elapsed count at whole-second
+ * resolution that it subtracts from a moving timestamp, so two reads of the
+ * same process differ by up to a second — measured at 945ms of spread here —
+ * and cannot be compared exactly. `lstart` is the absolute start instead: also
+ * whole seconds, but the same value on every read, and recorded at fork, so it
+ * survives sleep/wake. Its cost is a `ps` call, measured at 3.5ms.
+ *
+ * TZ and LC_ALL are pinned because ps formats the field with strftime: without
+ * them the value moves when the machine changes timezone, and stops parsing
+ * altogether under a locale that renders month names in another language.
+ */
+export function getProcessLstart(pid: number): number | null {
+  if (!isDarwin || !isValidPid(pid)) {
+    return null;
+  }
+
+  try {
+    const lstart = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const startTime = Date.parse(`${lstart} UTC`);
+    return Number.isFinite(startTime) ? startTime : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Which comparison produced an identity verdict, or which side of it was
  * missing so that none could be made: 'unreadable' is a process whose start
  * time could not be read, 'noPidFile' a record that could not be stat'd.
@@ -130,8 +165,9 @@ export function describeRejection(verdict: IdentityVerdict, pid: number): string
  * Check if a running process is the same instance we originally spawned.
  *
  * Resolution order: recorded start ticks compared exactly (Linux), else a
- * recorded start time compared exactly (Windows), else the process start time
- * compared against the PID file's modification time within a tolerance.
+ * recorded start time compared exactly (Windows, macOS), else the process
+ * start time compared against the PID file's modification time within a
+ * tolerance.
  *
  * Reports false if the process doesn't exist, its start time can't be
  * determined, or the recorded evidence doesn't match (likely PID reuse).
@@ -151,7 +187,10 @@ export async function isSameProcessInstance(
   }
 
   if (evidence?.startTime != null) {
-    const startTime = await getProcessStartTime(pid);
+    // Read back through the same source that recorded it: lstart on macOS,
+    // pidusage on Windows. Crossing them would compare whole seconds against
+    // milliseconds and never match.
+    const startTime = isDarwin ? getProcessLstart(pid) : await getProcessStartTime(pid);
     // Unlike ticks, a null read here does mean the process is gone: the
     // recorded value came from the very source that just failed to answer.
     if (startTime === null) {

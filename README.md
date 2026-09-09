@@ -252,7 +252,9 @@ On Linux, the PID file records the process's start ticks (field 22 of `/proc/<pi
 
 On Windows, it records the process's creation time in milliseconds — a fixed value the OS reports rather than a computed one — the first time the PID file is verified. That check is an exact match too.
 
-On macOS and other platforms, `just-one` falls back to comparing the PID file's modification time against the process's start time reported by the OS; if these don't match within 5 seconds, the PID file is considered stale and the process is not killed. The fallback stays in place there because those systems report a process's elapsed time in whole seconds, which is too coarse to compare exactly.
+On macOS, it records the process's absolute start time from `ps -o lstart`, at whole-second resolution but identical on every read. That check is an exact match too. It is not the elapsed time other tools report on macOS, which is derived from a moving clock and differs by up to a second between two reads of the same process.
+
+On every other platform, `just-one` falls back to comparing the PID file's modification time against the process's start time reported by the OS; if these don't match within 5 seconds, the PID file is considered stale and the process is not killed. The fallback stays in place there because those systems report a process's elapsed time in whole seconds, which is too coarse to compare exactly.
 
 PID files written by older versions hold only a bare PID and use that fallback. The exact value is recorded the first time such a file is verified, so a process started by an older version becomes exact without needing a restart. The file's modification time is preserved, so an older `just-one` sharing the same PID directory keeps working.
 

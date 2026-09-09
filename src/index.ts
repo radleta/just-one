@@ -29,6 +29,7 @@ import {
   describeRejection,
   getProcessStartTicks,
   getProcessStartTime,
+  getProcessLstart,
   type IdentityVerdict,
 } from './lib/process.js';
 import { existsSync, mkdirSync } from 'fs';
@@ -62,8 +63,10 @@ function logError(message: string): void {
  * No-op when evidence is already present or the platform can't supply any.
  *
  * Recording happens here, on a verification that already succeeded, rather than
- * at spawn: reading the start time on Windows costs a subprocess, and --ensure
- * runs the spawn path on every invocation.
+ * at spawn: reading the start time on Windows costs a wmic/PowerShell
+ * subprocess, and --ensure runs the spawn path on every invocation. macOS is
+ * cheap enough (a 3.5ms `ps` call) to record at spawn as well, so this path
+ * only upgrades PID files an older version left bare there.
  */
 async function recordIdentityEvidence(
   name: string,
@@ -81,9 +84,15 @@ async function recordIdentityEvidence(
     return;
   }
 
-  // Every other platform reads its start time through pidusage's ps backend,
-  // whose one-second resolution cannot support an exact comparison. Those keep
-  // writing a bare PID file and stay on the mtime path.
+  const lstart = getProcessLstart(pid);
+  if (lstart !== null) {
+    writeIdentityEvidence(name, pidDir, { startTime: lstart });
+    return;
+  }
+
+  // Every remaining platform reads its start time through pidusage's ps
+  // backend, whose one-second resolution cannot support an exact comparison.
+  // Those keep writing a bare PID file and stay on the mtime path.
   if (process.platform !== 'win32') {
     return;
   }
@@ -234,7 +243,10 @@ async function handleRun(options: CliOptions): Promise<number> {
       }
       const { pid } = spawnCommandDaemon(command, args, logPath!);
 
-      writePid(name, pid, options.pidDir, { startTicks: getProcessStartTicks(pid) });
+      writePid(name, pid, options.pidDir, {
+        startTicks: getProcessStartTicks(pid),
+        startTime: getProcessLstart(pid),
+      });
       log(`Daemon started with PID: ${pid}`, options);
       log(`Logs: ${logPath!}`, options);
       return 0;
@@ -247,7 +259,10 @@ async function handleRun(options: CliOptions): Promise<number> {
     if (!existsSync(options.pidDir)) {
       mkdirSync(options.pidDir, { recursive: true });
     }
-    writePid(name, pid, options.pidDir, { startTicks: getProcessStartTicks(pid) });
+    writePid(name, pid, options.pidDir, {
+      startTicks: getProcessStartTicks(pid),
+      startTime: getProcessLstart(pid),
+    });
     log(`Process started with PID: ${pid}`, options);
 
     // Set up signal handlers; pipedStdio only when log capture is active

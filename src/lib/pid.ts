@@ -23,12 +23,13 @@ const START_TIME_KEY = 'startTime=';
  * can tell the original process from an unrelated one that reused its PID.
  *
  * At most one kind is recorded per file: ticks where the platform supplies them
- * (Linux), the start time where it does not but the value is exact (Windows).
+ * (Linux), the start time where it does not but the value is exact (Windows,
+ * macOS).
  */
 export interface IdentityEvidence {
   /** Process start time in clock ticks since boot (Linux) */
   startTicks?: number | null;
-  /** Process start time as a Unix timestamp in milliseconds (Windows) */
+  /** Process start time as a Unix timestamp in milliseconds (Windows, macOS) */
   startTime?: number | null;
 }
 
@@ -44,7 +45,7 @@ export interface PidRecord {
   pid: number;
   /** Process start time in clock ticks since boot (Linux only, null elsewhere) */
   startTicks: number | null;
-  /** Process start time in milliseconds (Windows only, null elsewhere) */
+  /** Process start time in milliseconds (Windows and macOS only, null elsewhere) */
   startTime: number | null;
 }
 
