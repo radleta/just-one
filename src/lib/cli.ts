@@ -455,7 +455,7 @@ Usage:
   just-one -p <name>                 Print the PID of a named process
   just-one -w <name>                 Wait for a named process to exit
   just-one -l                        List all tracked processes
-  just-one --clean                   Remove stale PID files and orphaned log files
+  just-one --clean                   Remove stale PID files, orphaned log files and abandoned temp files
 
 Options:
   -n, --name <name>      Name to identify this process (required for running)
@@ -472,7 +472,7 @@ Options:
   -w, --wait <name>      Wait for a named process to exit
   -t, --timeout <secs>   Timeout in seconds (use with --wait)
   -g, --grace <secs>     Grace period before force kill (default: 5s)
-  --clean                Remove stale PID files and orphaned log files
+  --clean                Remove stale PID files, orphaned log files and abandoned temp files
   -l, --list             List all tracked processes and their status
   -d, --pid-dir <dir>    Directory for PID files (default: .just-one/)
   -q, --quiet            Suppress output

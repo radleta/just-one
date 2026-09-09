@@ -234,7 +234,7 @@ just-one -n storybook -d /tmp -- npx storybook dev
   storybook.pid    # Contains: 12345
   storybook.log    # Captured output (both foreground and daemon)
   storybook.log.1  # Rotated backup (auto-managed)
-  vite.pid         # Contains: 67890 (plus recorded identity evidence, once verified)
+  vite.pid         # Contains: 67890 (plus recorded identity evidence)
 ```
 
 1. Check if a PID file exists for that name
