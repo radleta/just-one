@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [1.5.0](https://github.com/radleta/just-one/compare/v1.4.3...v1.5.0) (2026-09-24)
+
+
+### Bug Fixes
+
+* **daemon:** start Windows daemon without inheriting just-one's handles ([83d3ff4](https://github.com/radleta/just-one/commit/83d3ff46f4abd3d0307f70e17843153d83e802d1))
+
 ### [1.4.3](https://github.com/radleta/just-one/compare/v1.4.2...v1.4.3) (2026-09-09)
 
 
