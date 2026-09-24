@@ -22,6 +22,7 @@ npx @radleta/just-one -n dev -- npm run dev
 - [Installation](#installation)
 - [Usage](#usage)
 - [CLI Options](#cli-options)
+- [Exit Codes](#exit-codes)
 - [package.json Scripts](#packagejson-scripts)
 - [How It Works](#how-it-works)
 - [Use Cases](#use-cases)
@@ -214,6 +215,16 @@ just-one -n storybook -d /tmp -- npx storybook dev
 | `--help`           | `-h`  | Show help                                                           |
 | `--version`        | `-v`  | Show version                                                        |
 
+## Exit Codes
+
+| Code         | Meaning                                                                                                                         |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| 0            | Success, or the foreground child exited with 0                                                                                  |
+| 1            | Error: invalid arguments, spawn failed, or a kill failed                                                                        |
+| 1            | `--status`: not running. `--pid`: not running. `--wait`: timed out or not running. `--kill`: not tracked. `--logs`: no log file |
+| _n_          | Foreground mode: the child's own exit code, passed through                                                                      |
+| 128 + signal | Foreground mode: the child was killed by a signal (143 for SIGTERM, 130 for SIGINT, 129 for any other)                          |
+
 ## package.json Scripts
 
 ```json
@@ -289,17 +300,17 @@ just-one -n storybook-docs -- storybook dev -p 6007
 
 ## Comparison
 
-| Feature                | just-one        | kill-port    | pm2          |
-| ---------------------- | --------------- | ------------ | ------------ |
-| Kills by PID (precise) | **Yes**         | No (by port) | Yes          |
-| PID reuse protection   | **Yes**         | No           | No           |
-| Status check           | Yes             | No           | Yes          |
-| Cross-platform         | Yes             | Yes          | Yes          |
-| Zero config            | Yes             | Yes          | No           |
-| Remembers processes    | Yes (PID file)  | No           | Yes (daemon) |
-| Lightweight            | **Yes (1 dep)** | Yes          | Heavy        |
-| Daemon mode            | Yes             | No           | Yes          |
-| Log capture & tailing  | Yes             | No           | Yes          |
+| Feature                | just-one                     | kill-port    | pm2          |
+| ---------------------- | ---------------------------- | ------------ | ------------ |
+| Kills by PID (precise) | **Yes**                      | No (by port) | Yes          |
+| PID reuse protection   | **Yes**                      | No           | No           |
+| Status check           | Yes                          | No           | Yes          |
+| Cross-platform         | Yes                          | Yes          | Yes          |
+| Zero config            | Yes                          | Yes          | No           |
+| Remembers processes    | Yes (PID file)               | No           | Yes (daemon) |
+| Lightweight            | **Yes (1 dep + 1 optional)** | Yes          | Heavy        |
+| Daemon mode            | Yes                          | No           | Yes          |
+| Log capture & tailing  | Yes                          | No           | Yes          |
 
 ## Programmatic Usage
 
