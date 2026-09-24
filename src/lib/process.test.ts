@@ -14,6 +14,7 @@ import {
   isSameProcessInstance,
   describeRejection,
 } from './process.js';
+import { spawnDetachedWithoutInheritance } from './windows-spawn.js';
 import { ChildProcess, spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from 'fs';
@@ -34,6 +35,16 @@ vi.mock('pidusage', async importOriginal => {
       pidusageOverride.startTime === null
         ? actual.default(pid)
         : Promise.resolve({ timestamp: pidusageOverride.startTime, elapsed: 0 }),
+  };
+});
+
+// Passes through to the real isolated launch unless a test makes it throw, so the
+// other spawnCommandDaemon tests still exercise it on Windows.
+vi.mock('./windows-spawn.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('./windows-spawn.js')>();
+  return {
+    ...actual,
+    spawnDetachedWithoutInheritance: vi.fn(actual.spawnDetachedWithoutInheritance),
   };
 });
 
@@ -315,9 +326,40 @@ describe('spawnCommandDaemon', () => {
     const result = spawnCommandDaemon('node', [sleepScript], logPath);
     daemonPid = result.pid;
 
-    expect(result.child).toBeDefined();
+    expect(result.isolationFallback).toBeUndefined();
     expect(result.pid).toBeGreaterThan(0);
     expect(typeof result.pid).toBe('number');
+  });
+
+  it('falls back to spawn with the reason when the isolated launch throws', async () => {
+    vi.mocked(spawnDetachedWithoutInheritance).mockImplementationOnce(() => {
+      throw new Error('boom');
+    });
+    const echoScript = join(DAEMON_TEST_DIR, '_echo-fallback.js');
+    writeFileSync(echoScript, 'console.log("fallback-hello"); setTimeout(() => {}, 60000)');
+
+    const logPath = join(DAEMON_TEST_DIR, 'daemon-fallback.log');
+    const result = spawnCommandDaemon('node', [echoScript], logPath);
+    daemonPid = result.pid;
+
+    if (!isWindows) {
+      // The Unix branch never attempts an isolated launch
+      expect(result.isolationFallback).toBeUndefined();
+      vi.mocked(spawnDetachedWithoutInheritance).mockReset();
+      return;
+    }
+
+    expect(result.isolationFallback).toBe('boom');
+    expect(isProcessAlive(result.pid)).toBe(true);
+
+    const start = Date.now();
+    let content = '';
+    while (Date.now() - start < 5000) {
+      content = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
+      if (content.includes('fallback-hello')) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    expect(content).toContain('fallback-hello');
   });
 
   it('captures daemon output to log file', async () => {

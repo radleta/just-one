@@ -105,5 +105,8 @@
   },
   "dependencies": {
     "pidusage": "^4.0.1"
+  },
+  "optionalDependencies": {
+    "koffi": "^3.3.1"
   }
 }

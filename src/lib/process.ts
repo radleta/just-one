@@ -8,6 +8,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import pidusage from 'pidusage';
 import type { IdentityEvidence } from './pid.js';
+import { spawnDetachedWithoutInheritance } from './windows-spawn.js';
 
 const isWindows = process.platform === 'win32';
 const isLinux = process.platform === 'linux';
@@ -445,14 +446,19 @@ function getDaemonHelperPath(): string {
  * On Windows, spawns a lightweight helper process (daemon-helper.js) that uses
  * shell: true + piped stdio to resolve .cmd wrappers. Direct fd-based stdio with
  * cmd.exe + detached doesn't work (known Node.js limitation — logs stay empty).
+ * The helper is started through CreateProcessW with handle inheritance off, so
+ * the daemon never holds a pipe the caller is reading. If that isolated launch
+ * throws for any reason, the helper is started with Node's spawn() as before and
+ * `isolationFallback` carries the error message for the caller to warn with.
  *
- * On Unix, uses fd-based stdio directly (no .cmd issue, no shell needed).
+ * On Unix, uses fd-based stdio directly (no .cmd issue, no shell needed) and
+ * never sets `isolationFallback`.
  */
 export function spawnCommandDaemon(
   command: string,
   args: string[],
   logFilePath: string
-): SpawnResult {
+): { pid: number; isolationFallback?: string } {
   if (isWindows) {
     // Pre-create the log file so callers can rely on its existence immediately
     // (matching the Unix fd-based path which creates via openSync before spawn).
@@ -460,7 +466,15 @@ export function spawnCommandDaemon(
     closeSync(openSync(logFilePath, 'a'));
 
     const helperPath = getDaemonHelperPath();
-    const child = spawn(process.execPath, [helperPath, logFilePath, command, ...args], {
+    const helperArgs = [helperPath, logFilePath, command, ...args];
+    let isolationFallback: string;
+    try {
+      return { pid: spawnDetachedWithoutInheritance(process.execPath, helperArgs) };
+    } catch (err) {
+      isolationFallback = err instanceof Error ? err.message : String(err);
+    }
+
+    const child = spawn(process.execPath, helperArgs, {
       detached: true,
       stdio: 'ignore',
       windowsHide: true,
@@ -472,7 +486,7 @@ export function spawnCommandDaemon(
     }
 
     child.unref();
-    return { child, pid: child.pid };
+    return { pid: child.pid, isolationFallback };
   }
 
   // Unix: fd-based stdio works reliably with detached processes
@@ -489,7 +503,7 @@ export function spawnCommandDaemon(
     }
 
     child.unref();
-    return { child, pid: child.pid };
+    return { pid: child.pid };
   } finally {
     closeSync(logFd);
   }

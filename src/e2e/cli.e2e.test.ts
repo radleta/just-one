@@ -13,7 +13,10 @@ import {
   writeFileSync,
   statSync,
   utimesSync,
+  mkdtempSync,
+  cpSync,
 } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 
 // CLI invocation configuration
@@ -1163,6 +1166,82 @@ describe('Daemon Mode', () => {
     const logPath = join(TEST_PID_DIR, 'test-daemon-cmd.log');
     const logContent = await waitForFileContent(logPath, 'cmd-wrapper-works');
     expect(logContent).toContain('cmd-wrapper-works');
+  });
+
+  it("daemon does not hold the caller's output pipe under a PowerShell layer on Windows", async () => {
+    // Node marks its own stdio handles non-inheritable, so a Node parent alone cannot
+    // reproduce the leak; powershell.exe leaves an inheritable copy of the pipe behind.
+    if (process.platform !== 'win32' || USE_NPX) return;
+
+    const sleepScript = join(TEST_PID_DIR, '_sleep60.js');
+    writeFileSync(sleepScript, 'setTimeout(() => {}, 60000);');
+
+    const q = (a: string) => `'${a.replace(/'/g, "''")}'`;
+    const cliArgs = ['-n', 't', '-D', '-d', TEST_PID_DIR, '--', 'node', sleepScript];
+    const script = `& ${[process.execPath, CLI_PATH, ...cliArgs].map(q).join(' ')}`;
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout.resume();
+    child.stderr.resume();
+
+    const closedAfterExit = await new Promise<boolean>(resolve => {
+      child.on('close', () => resolve(true));
+      child.on('exit', () => setTimeout(() => resolve(false), 5000));
+    });
+    const pid = readPidFile('t');
+    const daemonAlive = pid !== null && isProcessRunning(pid);
+
+    expect(closedAfterExit).toBe(true);
+    expect(daemonAlive).toBe(true);
+  });
+
+  it('falls back with a warning when koffi is not installed on Windows', async () => {
+    if (process.platform !== 'win32' || USE_NPX) return;
+
+    // An install without optional dependencies: pidusage is the only runtime
+    // dependency, and its Windows backend loads nothing else.
+    const root = join(__dirname, '../..');
+    const copy = mkdtempSync(join(tmpdir(), 'just-one-no-koffi-'));
+    try {
+      for (const entry of ['dist', 'bin', 'package.json', 'node_modules/pidusage']) {
+        cpSync(join(root, entry), join(copy, entry), { recursive: true });
+      }
+      const echoScript = join(TEST_PID_DIR, '_echo-no-koffi.js');
+      writeFileSync(echoScript, 'console.log("no-koffi-hello");');
+
+      const result = await new Promise<{ code: number; stderr: string }>(resolve => {
+        const child = spawn(
+          process.execPath,
+          [
+            join(copy, 'bin', 'just-one.js'),
+            '-n',
+            't',
+            '-D',
+            '-d',
+            TEST_PID_DIR,
+            '--',
+            'node',
+            echoScript,
+          ],
+          { stdio: ['ignore', 'pipe', 'pipe'] }
+        );
+        let stderr = '';
+        child.stdout.resume();
+        child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+        child.on('close', code => resolve({ code: code ?? 1, stderr }));
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toContain('Warning: daemon started without handle isolation');
+      expect(result.stderr).toContain('Cause: koffi could not be loaded (');
+      expect(result.stderr.trim().split(/\r?\n/)).toHaveLength(1);
+      expect(existsSync(join(TEST_PID_DIR, 't.pid'))).toBe(true);
+      const logContent = await waitForFileContent(join(TEST_PID_DIR, 't.log'), 'no-koffi-hello');
+      expect(logContent).toContain('no-koffi-hello');
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
   });
 
   it('replaces existing daemon (kills first, starts second)', async () => {
