@@ -187,10 +187,16 @@ reports a process's start time cross-platform. It is used to verify process
 identity before killing, and on the platforms that record their own evidence
 (`/proc` on Linux, `ps -o lstart` on macOS) only as the fallback path.
 
+One optional dependency, [koffi](https://koffi.dev/), which lets the Windows
+daemon launch call `CreateProcessW` with handle inheritance off. It is loaded
+lazily on Windows daemon starts only; when it is missing, the daemon starts
+through Node's `spawn` and `just-one` prints a warning.
+
 Everything else is a Node.js built-in:
 
 - `child_process` (spawn, execSync, execFileSync)
 - `fs` (read/write/stat/rename/utimes, directory listing)
+- `module` (createRequire, to load koffi lazily)
 - `path` (join, dirname, basename)
 - `process` (platform, kill, on)
 
@@ -241,6 +247,7 @@ just-one/
       pid.ts           # PID file operations
       process.ts       # Process spawn/kill
       log.ts           # Log file read/write/rotate/tail
+      windows-spawn.ts # Windows daemon launch without handle inheritance
       *.test.ts        # Unit tests, beside the module they cover
     e2e/
       cli.e2e.test.ts  # End-to-end tests

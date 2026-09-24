@@ -59,7 +59,7 @@ Existing solutions have drawbacks:
 - **Log viewing** — View captured logs, follow in real-time (like `tail -f`)
 - **Log rotation** — Automatic rotation at 10MB (keeps 1 backup)
 - **Cross-platform** — Works on Windows, macOS, and Linux
-- **Minimal dependencies** — Only [pidusage](https://github.com/soyuka/pidusage) for process verification
+- **Minimal dependencies** — Only [pidusage](https://github.com/soyuka/pidusage) for process verification, plus the optional [koffi](https://koffi.dev/) for Windows daemon handle isolation
 
 ## Installation
 
@@ -113,6 +113,8 @@ just-one -n myapp --no-log -- npm start
 # Run in background — parent exits immediately, output captured to log file
 just-one -n myapp -D -- npm start
 ```
+
+On Windows, the daemon is started without inheriting any of `just-one`'s handles, so piping a command that starts one (`... | tail`, a CI step, an agent reading the output) finishes when `just-one` exits rather than when the daemon stops. This uses the optional dependency [koffi](https://koffi.dev/), which npm installs by default. If it is missing (for example, installed with `--omit=optional`) or the launch fails, the daemon still starts, and `just-one` prints a `Warning: daemon started without handle isolation` line on stderr naming the cause.
 
 ### Viewing Logs
 

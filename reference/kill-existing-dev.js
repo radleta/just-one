@@ -1,5 +1,5 @@
 /**
- * Reference implementation from akn-www
+ * Reference implementation from a private project
  *
  * This script shows an alternative pattern: using npm's "predev" hook to
  * automatically kill the previous server before starting a new one.

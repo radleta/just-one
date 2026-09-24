@@ -241,12 +241,17 @@ async function handleRun(options: CliOptions): Promise<number> {
       if (!existsSync(options.pidDir)) {
         mkdirSync(options.pidDir, { recursive: true });
       }
-      const { pid } = spawnCommandDaemon(command, args, logPath!);
+      const { pid, isolationFallback } = spawnCommandDaemon(command, args, logPath!);
 
       writePid(name, pid, options.pidDir, {
         startTicks: getProcessStartTicks(pid),
         startTime: getProcessLstart(pid),
       });
+      if (isolationFallback) {
+        logError(
+          `Warning: daemon started without handle isolation, so it may hold open the output pipe of whatever reads this command (a "| tail", a CI step, an agent) until it stops. Cause: ${isolationFallback}.`
+        );
+      }
       log(`Daemon started with PID: ${pid}`, options);
       log(`Logs: ${logPath!}`, options);
       return 0;
